@@ -1,0 +1,268 @@
+spring:
+  application:
+    name: dmq-api-gateway
+  
+  # Consul Service Discovery
+  cloud:
+    consul:
+      host: localhost
+      port: 8500
+      discovery:
+        enabled: true
+        service-name: ${spring.application.name}
+        health-check-path: /actuator/health
+        health-check-interval: 10s
+        instance-id: ${spring.application.name}:${random.value}
+        prefer-ip-address: true
+        tags:
+          - gateway
+          - edge
+    
+    # Spring Cloud Gateway Configuration
+    gateway:
+      # Service Discovery Integration
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+      
+      # Route Definitions
+      routes:
+        # Producer Ingestion Service
+        - id: producer-ingestion
+          uri: lb://dmq-producer-ingestion
+          predicates:
+            - Path=/api/produce/**
+          filters:
+            - StripPrefix=1
+            - name: CircuitBreaker
+              args:
+                name: producerCircuitBreaker
+                fallbackUri: forward:/fallback/producer
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 1000    # tokens/second
+                redis-rate-limiter.burstCapacity: 2000    # max burst
+                redis-rate-limiter.requestedTokens: 1     # tokens per request
+                key-resolver: "#{@userKeyResolver}"
+            - name: Retry
+              args:
+                retries: 3
+                statuses: BAD_GATEWAY,GATEWAY_TIMEOUT
+                methods: POST
+                backoff:
+                  firstBackoff: 100ms
+                  maxBackoff: 1000ms
+                  factor: 2
+        
+        # Consumer Egress Service
+        - id: consumer-egress
+          uri: lb://dmq-consumer-egress
+          predicates:
+            - Path=/api/consume/**
+          filters:
+            - StripPrefix=1
+            - name: CircuitBreaker
+              args:
+                name: consumerCircuitBreaker
+                fallbackUri: forward:/fallback/consumer
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 2000
+                redis-rate-limiter.burstCapacity: 4000
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+        
+        # Metadata Service
+        - id: metadata-service
+          uri: lb://dmq-metadata-service
+          predicates:
+            - Path=/api/metadata/**
+          filters:
+            - StripPrefix=1
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 500
+                redis-rate-limiter.burstCapacity: 1000
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+        
+        # Storage Service (admin only)
+        - id: storage-service
+          uri: lb://dmq-storage-service
+          predicates:
+            - Path=/api/storage/**
+          filters:
+            - StripPrefix=1
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 100
+                redis-rate-limiter.burstCapacity: 200
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+        
+        # Controller Service (admin only)
+        - id: controller-service
+          uri: lb://dmq-controller-service
+          predicates:
+            - Path=/api/controller/**
+          filters:
+            - StripPrefix=1
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 50
+                redis-rate-limiter.burstCapacity: 100
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+      
+      # Global CORS Configuration
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOrigins: "*"
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+            allowedHeaders: "*"
+            exposedHeaders:
+              - X-Request-Id
+              - X-Response-Time
+            maxAge: 3600
+      
+      # Default filters for all routes
+      default-filters:
+        - name: RequestId
+        - name: AddResponseHeader
+          args:
+            name: X-Response-Source
+            value: DMQ-Gateway
+
+  # Redis Configuration (for rate limiting)
+  redis:
+    host: localhost
+    port: 6379
+    password: 
+    timeout: 2000ms
+    lettuce:
+      pool:
+        max-active: 8
+        max-idle: 8
+        min-idle: 0
+        max-wait: -1ms
+
+# Server Configuration
+server:
+  port: 8080
+  shutdown: graceful
+  netty:
+    connection-timeout: 30s
+
+# Management & Actuator
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,gateway
+  endpoint:
+    health:
+      show-details: always
+    gateway:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+
+# DMQ Gateway Configuration
+dmq:
+  gateway:
+    # JWT Configuration
+    jwt:
+      secret: ${DMQ_JWT_SECRET:dmq-secret-key-change-in-production-min-256-bits-long-for-hs256-algorithm}
+      expiration-ms: 86400000  # 24 hours
+      issuer: dmq-gateway
+    
+    # Authentication
+    auth:
+      enabled: true
+      public-paths:
+        - /actuator/**
+        - /fallback/**
+        - /api/auth/**
+      admin-paths:
+        - /api/storage/**
+        - /api/controller/**
+        - /api/metadata/topics/create
+        - /api/metadata/topics/delete
+    
+    # Rate Limiting
+    rate-limit:
+      enabled: true
+      default-replenish-rate: 1000
+      default-burst-capacity: 2000
+      
+      # Per-user limits
+      user-limits:
+        premium:
+          replenish-rate: 5000
+          burst-capacity: 10000
+        standard:
+          replenish-rate: 1000
+          burst-capacity: 2000
+        free:
+          replenish-rate: 100
+          burst-capacity: 200
+    
+    # Circuit Breaker Configuration
+    circuit-breaker:
+      failure-rate-threshold: 50              # 50% failure rate
+      slow-call-rate-threshold: 50            # 50% slow calls
+      slow-call-duration-threshold: 5000      # 5 seconds
+      sliding-window-size: 100                # 100 requests
+      minimum-number-of-calls: 10             # min calls before circuit trips
+      wait-duration-in-open-state: 30000      # 30 seconds in open state
+      permitted-calls-in-half-open: 5         # 5 calls in half-open state
+
+# Logging Configuration
+logging:
+  level:
+    root: INFO
+    org.springframework.cloud.gateway: DEBUG
+    com.distributedmq.gateway: DEBUG
+    io.github.resilience4j: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: logs/gateway.log
+    max-size: 100MB
+    max-history: 30
+
+# Resilience4j Circuit Breaker
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        registerHealthIndicator: true
+        slidingWindowSize: 100
+        minimumNumberOfCalls: 10
+        permittedNumberOfCallsInHalfOpenState: 5
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        waitDurationInOpenState: 30s
+        failureRateThreshold: 50
+        slowCallRateThreshold: 50
+        slowCallDurationThreshold: 5s
+    instances:
+      producerCircuitBreaker:
+        baseConfig: default
+      consumerCircuitBreaker:
+        baseConfig: default
+  
+  timelimiter:
+    configs:
+      default:
+        timeoutDuration: 10s

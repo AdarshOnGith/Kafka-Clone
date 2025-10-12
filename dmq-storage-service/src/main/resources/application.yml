@@ -1,0 +1,116 @@
+spring:
+  application:
+    name: dmq-storage-service
+  
+  # Consul Service Discovery
+  cloud:
+    consul:
+      host: localhost
+      port: 8500
+      discovery:
+        enabled: true
+        service-name: ${spring.application.name}
+        health-check-path: /actuator/health
+        health-check-interval: 10s
+        instance-id: ${spring.application.name}:${dmq.storage.node-id}:${random.value}
+        prefer-ip-address: true
+        tags:
+          - storage
+          - grpc
+          - partition-${dmq.storage.node-id}
+
+# Server Configuration
+server:
+  port: 8082
+  shutdown: graceful
+  tomcat:
+    threads:
+      max: 200
+      min-spare: 10
+
+# gRPC Server Configuration
+grpc:
+  server:
+    port: 9092
+    enable-reflection: true
+  client:
+    metadata-service:
+      address: 'discovery:///dmq-metadata-service'
+      enableKeepAlive: true
+      keepAliveWithoutCalls: true
+      negotiationType: plaintext
+
+# Management & Actuator
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      nodeId: ${dmq.storage.node-id}
+
+# DMQ Storage Service Configuration
+dmq:
+  storage:
+    # Node identification
+    node-id: storage-node-01
+    rack-id: rack-1
+    
+    # Storage directories
+    data-dir: ./data/storage
+    log-dir: ./data/logs
+    index-dir: ./data/indexes
+    
+    # Write-Ahead Log settings
+    wal:
+      segment-size-bytes: 1073741824        # 1 GB
+      flush-interval-ms: 1000               # Flush every 1 second
+      flush-messages: 10000                 # Or every 10k messages
+      retention-hours: 168                  # 7 days
+      compression-enabled: true
+      compression-type: snappy
+    
+    # Replication settings
+    replication:
+      enabled: true
+      fetch-max-bytes: 1048576              # 1 MB per fetch
+      fetch-min-bytes: 1                    # Don't wait, fetch immediately
+      max-wait-ms: 500                      # Max wait for fetch
+      replica-lag-time-max-ms: 10000        # 10 seconds
+      replica-lag-max-messages: 4000
+    
+    # ISR (In-Sync Replicas) settings
+    isr:
+      check-interval-ms: 5000               # Check ISR every 5 seconds
+      shrink-threshold-ms: 10000            # Remove from ISR after 10s lag
+    
+    # Performance tuning
+    performance:
+      io-thread-pool-size: 10
+      network-thread-pool-size: 8
+      max-batch-size: 1000
+      buffer-size-bytes: 65536              # 64 KB
+    
+    # Metadata Service integration
+    metadata:
+      heartbeat-interval-ms: 3000           # Send heartbeat every 3 seconds
+      registration-retry-interval-ms: 5000
+      connection-timeout-ms: 5000
+
+# Logging Configuration
+logging:
+  level:
+    root: INFO
+    com.distributedmq.storage: DEBUG
+    io.grpc: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: logs/storage-service.log
+    max-size: 100MB
+    max-history: 30

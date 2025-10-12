@@ -1,0 +1,96 @@
+spring:
+  application:
+    name: dmq-controller-service
+  
+  # Consul Service Discovery
+  cloud:
+    consul:
+      host: localhost
+      port: 8500
+      discovery:
+        enabled: true
+        service-name: ${spring.application.name}
+        health-check-path: /actuator/health
+        health-check-interval: 10s
+        instance-id: ${spring.application.name}:${random.value}
+        prefer-ip-address: true
+        tags:
+          - controller
+          - leader-election
+
+# Server Configuration
+server:
+  port: 8085
+  shutdown: graceful
+
+# gRPC Client Configuration
+grpc:
+  client:
+    metadata-service:
+      address: 'discovery:///dmq-metadata-service'
+      enableKeepAlive: true
+      keepAliveWithoutCalls: true
+      negotiationType: plaintext
+
+# Management & Actuator
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+# DMQ Controller Configuration
+dmq:
+  controller:
+    # Controller identification
+    controller-id: controller-01
+    
+    # Leader election
+    election:
+      enabled: true
+      timeout-seconds: 30
+      refresh-interval-seconds: 10
+    
+    # Failure detection
+    failure-detection:
+      check-interval-ms: 10000        # Check every 10 seconds
+      node-timeout-ms: 60000          # Mark DEAD after 60 seconds
+      suspect-timeout-ms: 30000       # Mark SUSPECT after 30 seconds
+    
+    # Leader election algorithm
+    leader-election:
+      algorithm: first-available      # Options: first-available, least-loaded, rack-aware
+      min-isr-required: 2             # Minimum ISR before electing new leader
+      preferred-replica-index: 0      # Prefer first replica if available
+    
+    # Partition reassignment
+    reassignment:
+      enabled: true
+      max-partitions-per-batch: 100
+      throttle-ms: 1000               # Wait between batches
+    
+    # etcd configuration
+    etcd:
+      endpoints: http://localhost:2379
+      connection-timeout-ms: 5000
+      request-timeout-ms: 3000
+      namespace: /dmq/controller
+
+# Logging Configuration
+logging:
+  level:
+    root: INFO
+    com.distributedmq.controller: DEBUG
+    io.etcd: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: logs/controller-service.log
+    max-size: 100MB
+    max-history: 30

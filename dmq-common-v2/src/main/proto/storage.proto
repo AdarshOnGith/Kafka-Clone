@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "com.distributedmq.common.proto";
+option java_outer_classname = "StorageProto";
+
+package distributedmq.storage;
+
+// Storage Service - handles message persistence and replication
+service StorageService {
+  // Append records to a partition (called by Producer Ingestion Service)
+  rpc AppendRecords(AppendRequest) returns (AppendResponse);
+  
+  // Fetch records from a partition (called by Consumer Egress Service)
+  rpc FetchRecords(FetchRequest) returns (FetchResponse);
+  
+  // Replicate records to follower (internal replication)
+  rpc ReplicateRecords(ReplicationRequest) returns (ReplicationResponse);
+  
+  // Get partition status and high water mark
+  rpc GetPartitionStatus(PartitionStatusRequest) returns (PartitionStatusResponse);
+}
+
+// Append request
+message AppendRequest {
+  string topic = 1;
+  int32 partition = 2;
+  repeated Record records = 3;
+  int32 required_acks = 4;  // Number of acks needed (1=leader, -1=all ISR)
+  int32 timeout_ms = 5;
+}
+
+message Record {
+  string key = 1;
+  bytes value = 2;
+  int64 timestamp = 3;
+  map<string, string> headers = 4;
+}
+
+message AppendResponse {
+  int32 partition = 1;
+  int64 base_offset = 2;
+  int32 record_count = 3;
+  int32 error_code = 4;
+  string error_message = 5;
+}
+
+// Fetch request
+message FetchRequest {
+  string topic = 1;
+  int32 partition = 2;
+  int64 start_offset = 3;
+  int32 max_bytes = 4;
+  int32 timeout_ms = 5;
+}
+
+message FetchResponse {
+  string topic = 1;
+  int32 partition = 2;
+  repeated FetchedRecord records = 3;
+  int64 next_offset = 4;
+  int64 high_water_mark = 5;
+  int32 error_code = 6;
+}
+
+message FetchedRecord {
+  string key = 1;
+  bytes value = 2;
+  int64 offset = 3;
+  int64 timestamp = 4;
+  map<string, string> headers = 5;
+}
+
+// Replication request (leader to follower)
+message ReplicationRequest {
+  string topic = 1;
+  int32 partition = 2;
+  int32 leader_epoch = 3;
+  repeated Record records = 4;
+  int64 base_offset = 5;
+}
+
+message ReplicationResponse {
+  int32 partition = 1;
+  int64 last_offset = 2;
+  bool success = 3;
+  int32 error_code = 4;
+}
+
+// Partition status request
+message PartitionStatusRequest {
+  string topic = 1;
+  int32 partition = 2;
+}
+
+message PartitionStatusResponse {
+  string topic = 1;
+  int32 partition = 2;
+  int64 high_water_mark = 3;
+  int64 log_end_offset = 4;
+  bool is_leader = 5;
+  int32 leader_epoch = 6;
+  repeated string in_sync_replicas = 7;
+}
