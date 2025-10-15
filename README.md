@@ -2,7 +2,7 @@
 
 ## Modern Cloud-Native Distributed Messaging System
 
-A production-grade, microservices-based distributed messaging system inspired by Apache Kafka, built with modern architectural patterns and cloud-native principles.
+A production-grade-like, microservices-based distributed messaging system inspired by Apache Kafka, built with modern architectural patterns and cloud-native principles.
 
 ---
 
@@ -12,59 +12,44 @@ A production-grade, microservices-based distributed messaging system inspired by
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         Client Layer                             │
+│                         Client                                  │
 │  ┌──────────────────┐              ┌──────────────────┐         │
 │  │ Producer Client  │              │ Consumer Client  │         │
 │  └────────┬─────────┘              └────────┬─────────┘         │
 └───────────┼────────────────────────────────┼───────────────────┘
             │                                │
-            └────────────┬───────────────────┘
-                         │
-            ┌────────────▼────────────┐
-            │    API Gateway          │
-            │  - Authentication       │
-            │  - Rate Limiting        │
-            │  - Service Discovery    │
-            └────────┬────────┬───────┘
+            └────────────────────────────────┘
                      │        │
-        ┌────────────┘        └────────────┐
-        │                                  │
-┌───────▼──────────┐            ┌─────────▼─────────┐
-│ Producer         │            │ Consumer          │
-│ Ingestion        │            │ Egress            │
-│ Service          │            │ Service           │
-│ - Partitioning   │            │ - Group Mgmt      │
-│ - Batching       │            │ - Offset Mgmt     │
-└───────┬──────────┘            └─────────┬─────────┘
-        │                                  │
-        └────────────┬─────────────────────┘
-                     │
-        ┌────────────▼────────────┐
-        │  Metadata Service       │
-        │  - Topic Metadata       │
-        │  - Partition Leaders    │
-        │  - Consumer Offsets     │
-        └────────────┬────────────┘
-                     │
-        ┌────────────▼────────────┐
-        │  Storage Service        │
-        │  (Multiple Nodes)       │
-        │  - Leader/Follower      │
-        │  - WAL Storage          │
-        │  - Replication          │
-        └────────────┬────────────┘
-                     │
-        ┌────────────▼────────────┐
-        │  Controller Service     │
-        │  - Failure Detection    │
-        │  - Leader Election      │
-        │  - Cluster Coordination │
-        └─────────────────────────┘
-                     │
-        ┌────────────▼────────────┐
-        │  Coordination Store     │
-        │  (etcd/ZooKeeper)       │
-        └─────────────────────────┘
+                ┌────┘        └──────────────────────────────┐
+                │                                            │    
+                |                                            |
+                |                               ┌────────────▼────────────┐
+                |                               │  Storage Service        │
+                |                               │  (Multiple Nodes)       |
+                │                               |[API-GateWay like logic] |
+                |                               │  - Leader/Follower      │
+                |                               │  - WAL Storage          │
+                |                               │  - Replication          │
+                |                               └─────────────────────────┘
+                |
+┌───────────────▼─────────────────┐
+|        Metadata Service         |
+|        (Multiple Nodes)         |
+|      [API-GateWay like logic]   | 
+|    ┌─────────────────────────┐  |  
+|    │  Metadata part          │  |
+|    │  - Topic Metadata       │  |
+|    │  - Partition Leaders    │  |
+|    │  - Consumer Offsets     │  |
+|    └─────────────────────────┘  |
+|    ┌─────────────────────────┐  |
+|    │  Controller part        │  |
+|    │  - Failure Detection    │  |
+|    │  - Leader Election      │  |
+|    │  - Cluster Coordination │  |
+|    └─────────────────────────┘  |
+└─────────────────────────────────┘
+                
 ```
 
 ---
@@ -78,8 +63,8 @@ A production-grade, microservices-based distributed messaging system inspired by
 - Technology flexibility per service
 
 ### 2. **API Gateway Pattern**
-- Single entry point for all clients
-- Centralized authentication and authorization
+- Each node has entry point for a clients as contacted but checks via API-gateway like logic at entry
+- Decentralized authentication and authorization
 - Rate limiting and throttling
 - Service discovery integration
 
@@ -105,7 +90,7 @@ A production-grade, microservices-based distributed messaging system inspired by
 
 ## 📦 Microservices Breakdown
 
-### 1. API Gateway Service
+### 1. API Gateway like logic
 **Responsibilities:**
 - Request routing to appropriate services
 - Authentication and authorization
@@ -113,17 +98,18 @@ A production-grade, microservices-based distributed messaging system inspired by
 - Request/response transformation
 - Service discovery integration
 
-**Technology:** Spring Cloud Gateway / Netflix Zuul
+**Technology:** Spring Cloud Gateway or similar
 
 ---
 
-### 2. Producer Ingestion Service
+### 2. Producer Client side responsibilities
 **Responsibilities:**
-- Receive messages from producers
+- Receive messages from producers(initiator-service/client)
+- Reads/req metadata from metadata service
 - Apply partitioning logic (hash-based or custom)
 - Batch messages for efficiency
 - Route messages to correct storage nodes
-- Return acknowledgments
+- gets acknowledgments
 
 **Key Operations:**
 - Partition assignment
@@ -133,7 +119,7 @@ A production-grade, microservices-based distributed messaging system inspired by
 
 ---
 
-### 3. Consumer Egress Service
+### 3. Consumer Client side responsibilities (to cross check)
 **Responsibilities:**
 - Handle consumer subscriptions
 - Manage consumer groups
@@ -146,10 +132,10 @@ A production-grade, microservices-based distributed messaging system inspired by
 - Partition assignment
 - Offset management
 - Rebalancing protocol
-
 ---
 
-### 4. Metadata Service
+### 4. Metadata Service [Two parts metadata and controller]
+#### a. Metadata
 **Responsibilities:**
 - Store and serve cluster metadata
 - Track topic and partition information
@@ -163,7 +149,35 @@ A production-grade, microservices-based distributed messaging system inspired by
 - Consumer group offsets
 - Cluster topology
 
-**Storage:** PostgreSQL / etcd
+**Storage:** PostgreSQL or similar
+
+#### b1. Controller
+**Key Components:**
+- Write-Ahead Log (WAL)
+- Replication protocol
+- Leader/Follower roles
+- ISR management
+
+**Responsibilities:**
+- Monitor cluster health
+- Detect node failures
+- Perform leader election (parition)
+- Coordinate cluster changes
+- Maintain cluster state
+
+**Key Operations:**
+- Heartbeat monitoring
+- Failure detection
+- Leader election algorithm
+- Metadata updates
+
+---
+#### b2. Coordination part
+**Responsibilities:**
+- Distributed locking
+- Leader election for Controller
+- Ephemeral node tracking
+- Configuration management
 
 ---
 
@@ -175,41 +189,6 @@ A production-grade, microservices-based distributed messaging system inspired by
 - Maintain In-Sync Replicas (ISR)
 - Handle log compaction
 
-**Deployment:** Multiple instances (storage nodes)
-
-**Key Components:**
-- Write-Ahead Log (WAL)
-- Replication protocol
-- Leader/Follower roles
-- ISR management
-
----
-
-### 6. Controller Service
-**Responsibilities:**
-- Monitor cluster health
-- Detect node failures
-- Perform leader election
-- Coordinate cluster changes
-- Maintain cluster state
-
-**Key Operations:**
-- Heartbeat monitoring
-- Failure detection
-- Leader election algorithm
-- Metadata updates
-
----
-
-### 7. Coordination Store
-**Responsibilities:**
-- Distributed locking
-- Leader election for Controller
-- Ephemeral node tracking
-- Configuration management
-
-**Technology:** etcd or Apache ZooKeeper
-
 ---
 
 ## 🔄 Core Flows
@@ -219,25 +198,25 @@ A production-grade, microservices-based distributed messaging system inspired by
 ```
 Producer Client
     │
-    │ POST /produce/{topic}
-    ▼
-API Gateway
-    │
-    │ Route to Producer Ingestion Service
+    │ 
     ▼
 Producer Ingestion Service
     │
     │ 1. Partition assignment (hash-based)
     │ 2. Group by partition
     │ 3. Query Metadata Service for leaders
+    |
+    |
+    | n/w call
     ▼
+API-gateway-like layer of metadata service
 Metadata Service
     │
-    │ Return leader addresses
+    │ returns metadata requested.
     ▼
 Producer Ingestion Service
     │
-    │ POST /storage/partitions/{id}/append
+    │ n/w call to storage node(partition leader)
     ▼
 Storage Service (Leader)
     │
@@ -249,6 +228,118 @@ Storage Service (Leader)
 Response chain back to Producer Client
 ```
 
+
+### Addn Details:
+kaka produce request client to storage node:
+-client uses client side producer service flow to fetch metadata from metadata service using list of bootstrap metadata services (first call it uses bootstrap servers)
+- metadata service first validates request then caters to req and returns requested metadata
+- checks if topic exist otherwise first calls the controlled to create new topic and update cluster state.
+-uses metadata to get information of leader partition and broker(storage node) for the topic
+-makes reqw to leader partition broker(storage node) to publish message
+- storage validates the req then caters to it
+
+- Kafka Produce Request Flow (Inside the Broker)
+
+Assumptions:
+
+Producer has already fetched metadata
+
+Producer knows the leader broker for the target partition
+
+Step 1: Request Reception & Parsing
+
+Broker receives produce request on its socket
+
+Performs:
+
+Authentication and authorization
+
+Parses:
+
+Topic name
+
+Partition ID
+
+Message batch (records)
+
+Acknowledgment settings (acks)
+
+Producer ID & epoch (for idempotence)
+
+Transaction info (if applicable)
+
+Step 2: Validation and Quota Checks
+
+Broker validates:
+
+Topic and partition exist
+
+Producer is authorized
+
+Producer ID is valid (if idempotent)
+
+Quotas (rate limits, etc.)
+
+📌 Failure in any check results in immediate error response
+
+Step 3: Append Messages to Leader's Local Log
+
+Messages written to leader's active log segment (on disk)
+
+Offsets assigned atomically
+
+Sequence numbers checked for idempotent producers
+
+Step 4: Replication to Followers
+
+Leader asynchronously replicates data to follower brokers
+
+Followers use replica fetcher threads to pull data
+
+Leader tracks each follower's replication progress (High Watermark - HW)
+
+Step 5: Acknowledgment Semantics
+acks Setting	Behavior
+acks=0	Responds immediately (no durability guarantee)
+acks=1	Responds after local log write (leader only)
+acks=all / -1	Responds after all in-sync replicas (ISRs) have persisted the message
+Step 6: Update High Watermark & Log End Offset
+
+HW (High Watermark): Last offset confirmed by all ISRs
+
+LEO (Log End Offset): Offset of the next message to be written
+
+Step 7: Send Acknowledgment to Producer
+
+Once acks condition is met, broker replies with:
+
+Topic & partition info
+
+Base offset of batch
+
+Any errors (if any)
+
+Step 8: Consumer Visibility
+
+Consumers can only fetch messages up to HW
+
+Prevents reading uncommitted data
+
+📡 When is Kafka Metadata Updated?
+
+Metadata updates occur when:
+
+Topics or partitions are created/deleted
+
+Leader election occurs
+
+ISR list changes (replicas go offline or return)
+
+Configuration changes (topics/brokers)
+
+🚫 Metadata is not updated during normal produce flow.
+✅ HW and LEO are local states updated on the broker.
+
 ---
 
 ### Flow 2: Consumer Reads Message (Read Path)
@@ -256,25 +347,24 @@ Response chain back to Producer Client
 ```
 Consumer Client
     │
-    │ GET /consume/{group}/{topic}
-    ▼
-API Gateway
-    │
-    │ Route to Consumer Egress Service
+    │ 
     ▼
 Consumer Egress Service
     │
     │ 1. Check consumer group membership
     │ 2. Get partition assignment
     │ 3. Query Metadata Service for offset & leader
+    |
+    |  n/w call to metadata service
+    |
     ▼
 Metadata Service
     │
-    │ Return offset + leader address
+    │ Return requested metadata
     ▼
 Consumer Egress Service
     │
-    │ GET /storage/partitions/{id}/fetch
+    │ n/w call to storage (leader)
     ▼
 Storage Service (Leader)
     │
@@ -284,7 +374,6 @@ Response chain back to Consumer Client
     │
 Consumer processes messages
     │
-    │ POST /consume/{group}/offsets/{topic}/{partition}
     ▼
 Consumer Egress Service
     │
@@ -300,11 +389,11 @@ Offset committed
 ```
 Controller Service
     │
-    │ Monitor heartbeats / Watch etcd ephemeral nodes
+    │ Monitor heartbeats / Watch nodes
     ▼
 Detect Storage Node Failure
     │
-    │ Query Metadata Service for affected partitions
+    │ Query Metadata part for affected partitions
     ▼
 For each partition:
     │
@@ -312,7 +401,7 @@ For each partition:
     │ 2. Select new leader from ISR
     │ 3. Update Metadata Service
     ▼
-Metadata Service updated
+Metadata Service(s) updated and sync-ed
     │
     │ New leader address stored
     ▼
@@ -323,7 +412,35 @@ Client services refresh metadata cache
 Cluster healed
 ```
 
+
+### Details:
+The remaining quorum of brokers collectively perform an automatic election to choose a new controller.
+
+All brokers participate in a Raft consensus group (called the metadata quorum).
+
+One broker acts as the leader of this Raft quorum, and that broker is also the active controller.
+
+Failure detection:
+
+If the controller broker (Raft leader) goes down, the other brokers in the quorum detect the failure through missed heartbeats and lack of Raft activity.
+
+New controller election:
+
+Raft protocol automatically elects a new leader from the remaining in-sync brokers in the quorum.
+
+The new Raft leader becomes the new controller.
+
+Cluster metadata updates:
+
+The new controller updates the metadata and resumes control over tasks like:
+
+Leader election for partitions
+
+Replica management
+
+Topic changes
 ---
+
 
 ## 🛠️ Technology Stack
 
@@ -353,33 +470,27 @@ DistributedMQ/
 │   ├── dmq-common-proto/         # Protocol Buffers definitions
 │   └── dmq-common-utils/         # Utilities
 │
-├── dmq-api-gateway/              # API Gateway Service
-│   └── src/main/java/
-│       └── com/distributedmq/gateway/
-│
-├── dmq-producer-ingestion/       # Producer Ingestion Service
-│   └── src/main/java/
-│       └── com/distributedmq/producer/
-│
-├── dmq-consumer-egress/          # Consumer Egress Service
-│   └── src/main/java/
-│       └── com/distributedmq/consumer/
+│----dmq-client/   
+|    ├── dmq-producer-client/        # Producer Ingestion Service
+|    │   └── src/main/java/
+|    │       └── com/distributedmq/producer/
+|    │
+|    ├── dmq-consumer-client/          # Consumer Egress Service
+|        └── src/main/java/
+|            └── com/distributedmq/consumer/
 │
 ├── dmq-metadata-service/         # Metadata Service
-│   └── src/main/java/
-│       └── com/distributedmq/metadata/
-│
+|    ├── dmq-metadata-handler/         # Metadata part
+|    │   └── src/main/java/
+|    │       └── com/distributedmq/metadata/
+|    │
+|    ├── dmq-controller-handler/       # Controller part
+|    │   └── src/main/java/
+|    │       └── com/distributedmq/controller/
+|
 ├── dmq-storage-service/          # Storage Service
 │   └── src/main/java/
 │       └── com/distributedmq/storage/
-│
-├── dmq-controller-service/       # Controller Service
-│   └── src/main/java/
-│       └── com/distributedmq/controller/
-│
-├── dmq-client-sdk/               # Client SDK (Producer/Consumer)
-│   └── src/main/java/
-│       └── com/distributedmq/client/
 │
 ├── docker/                       # Docker configurations
 ├── kubernetes/                   # K8s manifests
@@ -395,7 +506,6 @@ DistributedMQ/
 - Maven 3.8+
 - Docker & Docker Compose
 - PostgreSQL 14+
-- etcd 3.5+
 
 ### Quick Start (Local Development)
 
@@ -406,78 +516,9 @@ docker-compose up -d postgres etcd
 # Build all services
 mvn clean install
 
-# Start services (separate terminals)
-cd dmq-metadata-service && mvn spring-boot:run
-cd dmq-storage-service && mvn spring-boot:run
-cd dmq-controller-service && mvn spring-boot:run
-cd dmq-producer-ingestion && mvn spring-boot:run
-cd dmq-consumer-egress && mvn spring-boot:run
-cd dmq-api-gateway && mvn spring-boot:run
+
 ```
 
-### Using the System
-
-```java
-// Producer Example
-DMQProducer producer = DMQProducer.builder()
-    .gatewayUrl("http://localhost:8080")
-    .build();
-
-producer.send("my-topic", "key-1", "message-1");
-
-// Consumer Example
-DMQConsumer consumer = DMQConsumer.builder()
-    .gatewayUrl("http://localhost:8080")
-    .groupId("my-group")
-    .build();
-
-consumer.subscribe("my-topic");
-List<Record> records = consumer.poll(Duration.ofMillis(100));
-```
-
----
-
-## 📈 Scalability
-
-### Independent Service Scaling
-
-```bash
-# Scale Producer Ingestion Service
-kubectl scale deployment producer-ingestion --replicas=5
-
-# Scale Storage Service
-kubectl scale deployment storage-service --replicas=10
-
-# Scale Consumer Egress Service
-kubectl scale deployment consumer-egress --replicas=3
-```
-
----
-
-## 🎓 Learning Outcomes
-
-This project demonstrates:
-- ✅ Microservices architecture patterns
-- ✅ API Gateway pattern
-- ✅ Service discovery and registration
-- ✅ Distributed coordination (etcd)
-- ✅ Leader election algorithms
-- ✅ Fault tolerance and self-healing
-- ✅ gRPC for inter-service communication
-- ✅ RESTful APIs for client communication
-- ✅ Container orchestration (Kubernetes)
-- ✅ Cloud-native principles
-
----
-
-## 📖 Documentation
-
-- [Architecture Deep Dive](docs/ARCHITECTURE.md)
-- [API Reference](docs/API_REFERENCE.md)
-- [Deployment Guide](docs/DEPLOYMENT.md)
-- [Development Guide](docs/DEVELOPMENT.md)
-
----
 
 ## 🏆 Why This Architecture?
 
@@ -487,16 +528,6 @@ This project demonstrates:
 4. **Maintainable**: Clear boundaries, easier to debug and update
 5. **Cloud-Native**: Ready for Kubernetes deployment
 6. **Educational**: Demonstrates modern distributed systems patterns
-
----
-
-## 📞 Project Information
-
-**Course**: Distributed Systems  
-**Architecture**: Microservices-based  
-**Pattern**: Cloud-Native  
-**Deployment**: Kubernetes-ready
-
 ---
 
 **Version**: 2.0.0 (Microservices Architecture)  
