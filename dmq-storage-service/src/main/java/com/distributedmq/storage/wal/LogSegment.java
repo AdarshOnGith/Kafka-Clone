@@ -1,6 +1,7 @@
 package com.distributedmq.storage.wal;
 
 import com.distributedmq.common.model.Message;
+import com.distributedmq.storage.config.StorageConfig;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.*;
@@ -22,16 +23,16 @@ public class LogSegment {
     public LogSegment(Path baseDir, long baseOffset) throws IOException {
         this.baseDir = baseDir;
         this.baseOffset = baseOffset;
-        this.logFile = new File(baseDir.toFile(), String.format("%020d.log", baseOffset)); // TODO: put in const/config
-        
+        this.logFile = new File(baseDir.toFile(), String.format(StorageConfig.LOG_FILE_FORMAT, baseOffset));
+
         // Create file if it doesn't exist
         logFile.getParentFile().mkdirs();
         logFile.createNewFile();
-        
+
         this.fileOutputStream = new FileOutputStream(logFile, true);
         this.dataOutputStream = new DataOutputStream(fileOutputStream);
         this.currentSize = logFile.length();
-        
+
         log.debug("Created log segment: {}", logFile.getPath());
     }
 
@@ -39,7 +40,7 @@ public class LogSegment {
      * Append message to segment
      */
     public void append(Message message) throws IOException {
-        
+
         // TODO: Implement proper serialization format
         // Format: [size][crc][offset][timestamp][key_length][key][value_length][value]
         
@@ -91,7 +92,7 @@ public class LogSegment {
             dos.writeInt(keyBytes.length);
             dos.write(keyBytes);
         } else {
-            dos.writeInt(-1);
+            dos.writeInt(StorageConfig.NULL_KEY_LENGTH);
         }
         
         // Write value

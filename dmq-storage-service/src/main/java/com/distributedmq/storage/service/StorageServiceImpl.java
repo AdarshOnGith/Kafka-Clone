@@ -5,6 +5,7 @@ import com.distributedmq.common.dto.ConsumeResponse;
 import com.distributedmq.common.dto.ProduceRequest;
 import com.distributedmq.common.dto.ProduceResponse;
 import com.distributedmq.common.model.Message;
+import com.distributedmq.storage.config.StorageConfig;
 import com.distributedmq.storage.wal.WriteAheadLog;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -21,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 
 @Slf4j       // Injects log for logging
-@Servic           // Marks as a Spring component
+@Service       // Marks as a Spring component
 @RequiredArgsConstructor // Generates constructor for 'final' fields
 
 public class StorageServiceImpl implements StorageService {
@@ -30,6 +31,7 @@ public class StorageServiceImpl implements StorageService {
     private final Map<String, WriteAheadLog> partitionLogs = new ConcurrentHashMap<>();
     
     private final ReplicationManager replicationManager;
+    private final StorageConfig config;
 
     @Override
     public ProduceResponse appendMessages(ProduceRequest request) {
@@ -157,7 +159,7 @@ public class StorageServiceImpl implements StorageService {
         try {
             List<Message> messages = wal.read(
                     request.getOffset(),
-                    request.getMaxMessages() != null ? request.getMaxMessages() : 100
+                    request.getMaxMessages() != null ? request.getMaxMessages() : config.getConsumer().getDefaultMaxMessages()
             );
             
             return ConsumeResponse.builder()

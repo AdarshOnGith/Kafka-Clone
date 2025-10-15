@@ -1,6 +1,7 @@
 package com.distributedmq.storage.wal;
 
 import com.distributedmq.common.model.Message;
+import com.distributedmq.storage.config.StorageConfig;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.*;
@@ -32,18 +33,19 @@ public class WriteAheadLog {
 
     // LogSegment: a portion of the write-ahead log representing a contiguous range of messages stored on disk
     private LogSegment currentSegment;
-    
-    private static final long SEGMENT_SIZE = 1073741824L; // 1GB TODO: put in const or config
-    private static final String DATA_DIR = "./data"; // TODO: put in config
+
+    private final StorageConfig config;
 
     public WriteAheadLog(String topic, Integer partition) {
         this.topic = topic;
         this.partition = partition;
-        this.logDirectory = Paths.get(DATA_DIR, "logs", topic, String.valueOf(partition));
-        this.nextOffset = new AtomicLong(0);
-        this.highWaterMark = new AtomicLong(0);
-        this.logEndOffset = new AtomicLong(0);
-        
+        this.config = new StorageConfig(); // TODO: Inject via Spring
+
+        this.logDirectory = Paths.get(config.getBrokerLogsDir(), topic, String.valueOf(partition));
+        this.nextOffset = new AtomicLong(StorageConfig.DEFAULT_OFFSET);
+        this.highWaterMark = new AtomicLong(StorageConfig.DEFAULT_HIGH_WATER_MARK);
+        this.logEndOffset = new AtomicLong(StorageConfig.DEFAULT_LOG_END_OFFSET);
+
         initializeLog();
     }
 
@@ -73,7 +75,7 @@ public class WriteAheadLog {
             
             try {
                 // if max segment size is exceeded; roll to a new segment to keep the log manageable
-                if (currentSegment.size() >= SEGMENT_SIZE) {
+                if (currentSegment.size() >= config.getWal().getSegmentSizeBytes()) {
                     rollSegment();
                 }
                 

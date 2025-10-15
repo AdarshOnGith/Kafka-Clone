@@ -1,32 +1,41 @@
 server:
-  port: 8082
+  port: ${dmq.storage.server-port:8082}  # fallback to 8082 if not set
 
 spring:
   application:
     name: dmq-storage-service
 
-# Broker Configuration
-broker:
-  id: ${BROKER_ID:1}
-  host: ${BROKER_HOST:localhost}
-  port: ${BROKER_PORT:9092}
-  data-dir: ${DATA_DIR:./data/broker-1}
+# DMQ Storage Service Configuration
+dmq:
+  storage:
+    # Broker Configuration
+    broker:
+      id: ${BROKER_ID:1}
+      host: ${BROKER_HOST:localhost}
+      port: ${BROKER_PORT:9092}
+      data-dir: ${DATA_DIR:./data/broker-1}
 
-# Metadata Service Configuration
-metadata:
-  service-url: http://localhost:8081
+    # Metadata Service Configuration
+    metadata:
+      service-url: ${METADATA_SERVICE_URL:http://localhost:8081}
 
-# WAL Configuration
-wal:
-  segment-size-bytes: 1073741824  # 1GB
-  flush-interval-ms: 1000
-  retention-check-interval-ms: 300000  # 5 minutes
+    # WAL Configuration
+    wal:
+      segment-size-bytes: ${WAL_SEGMENT_SIZE_BYTES:1073741824}  # 1GB
+      flush-interval-ms: ${WAL_FLUSH_INTERVAL_MS:1000}
+      retention-check-interval-ms: ${WAL_RETENTION_CHECK_INTERVAL_MS:300000}  # 5 minutes
+      data-dir: ${WAL_DATA_DIR:./data}
+      logs-dir: ${LOGS_DIR:logs}
 
-# Replication Configuration
-replication:
-  fetch-max-bytes: 1048576  # 1MB
-  fetch-max-wait-ms: 500
-  replica-lag-time-max-ms: 10000
+    # Replication Configuration
+    replication:
+      fetch-max-bytes: ${REPLICATION_FETCH_MAX_BYTES:1048576}  # 1MB
+      fetch-max-wait-ms: ${REPLICATION_FETCH_MAX_WAIT_MS:500}
+      replica-lag-time-max-ms: ${REPLICATION_REPLICA_LAG_TIME_MAX_MS:10000}
+
+    # Consumer Configuration
+    consumer:
+      default-max-messages: ${CONSUMER_DEFAULT_MAX_MESSAGES:100}
 
 logging:
   level:

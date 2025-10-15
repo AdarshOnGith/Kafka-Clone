@@ -1,6 +1,8 @@
 package com.distributedmq.storage.service;
 
 import com.distributedmq.common.dto.ProduceRequest;
+import com.distributedmq.storage.config.StorageConfig;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -11,7 +13,10 @@ import java.util.List;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class ReplicationManager {
+
+    private final StorageConfig config;
 
     /**
      * Replicate batch of messages to followers
