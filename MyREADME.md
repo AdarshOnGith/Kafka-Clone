@@ -255,6 +255,10 @@ Metadata is updated:
 - When topics/partitions are created or deleted
 - During leader election
 - When ISR list changes
+    Leader sends updated ISR list to the controller.
+    Controller updates cluster metadata (ISR, leader info, etc.).
+    Updated metadata is propagated to all metadata brokers.
+    Metadata brokers update caches and respond with the latest cluster state to producers and consumers.
 - On configuration changes
 
 > ✅ **HW/LEO are local states**, not propagated as cluster metadata  
@@ -360,9 +364,7 @@ Cluster healed
 ```
 DistributedMQ/
 ├── dmq-common/                    # Shared libraries
-│   ├── dmq-common-models/        # Data models
-│   ├── dmq-common-proto/         # Protocol Buffers definitions
-│   └── dmq-common-utils/         # Utilities
+│           # Data models, # Protocol Buffers definitions, # Utilities etc.
 │
 │----dmq-client/   
 |    ├── dmq-producer-client/        # Producer Ingestion Service
@@ -375,17 +377,13 @@ DistributedMQ/
 │
 ├── dmq-metadata-service/         # Metadata Service
 |    ├── dmq-metadata-handler/         # Metadata part
-|    │   └── src/main/java/
-|    │       └── com/distributedmq/metadata/
-|    │
-|    ├── dmq-controller-handler/       # Controller part
-|    │   └── src/main/java/
-|    │       └── com/distributedmq/controller/
+|    └── dmq-controller-handler/       # Controller and coordination part
 |
 ├── dmq-storage-service/          # Storage Service
 │   └── src/main/java/
 │       └── com/distributedmq/storage/
-│
+|
+├── Admin_Client/  # Very last part to do
 ├── docker/                       # Docker configurations
 ├── kubernetes/                   # K8s manifests
 └── docs/                         # Documentation

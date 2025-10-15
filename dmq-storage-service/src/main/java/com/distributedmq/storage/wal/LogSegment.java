@@ -22,7 +22,7 @@ public class LogSegment {
     public LogSegment(Path baseDir, long baseOffset) throws IOException {
         this.baseDir = baseDir;
         this.baseOffset = baseOffset;
-        this.logFile = new File(baseDir.toFile(), String.format("%020d.log", baseOffset));
+        this.logFile = new File(baseDir.toFile(), String.format("%020d.log", baseOffset)); // TODO: put in const/config
         
         // Create file if it doesn't exist
         logFile.getParentFile().mkdirs();
@@ -39,6 +39,7 @@ public class LogSegment {
      * Append message to segment
      */
     public void append(Message message) throws IOException {
+        
         // TODO: Implement proper serialization format
         // Format: [size][crc][offset][timestamp][key_length][key][value_length][value]
         

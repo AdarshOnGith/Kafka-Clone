@@ -1,7 +1,7 @@
 package com.distributedmq.metadata.entity;
 
 import com.distributedmq.common.model.TopicMetadata;
-import jakarta.persistence.*;
+import javax.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;

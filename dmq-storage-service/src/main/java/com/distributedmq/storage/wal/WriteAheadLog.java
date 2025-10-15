@@ -21,14 +21,20 @@ public class WriteAheadLog {
 
     private final String topic;
     private final Integer partition;
+
+    // NIO package data type for file and directory paths
     private final Path logDirectory;
+
+    // AtomicLong: a thread-safe long value supporting atomic operations without explicit synchronization mechanisms
     private final AtomicLong nextOffset;
     private final AtomicLong highWaterMark;
-    
+    private final AtomicLong logEndOffset; // LEO - Log End Offset
+
+    // LogSegment: a portion of the write-ahead log representing a contiguous range of messages stored on disk
     private LogSegment currentSegment;
     
-    private static final long SEGMENT_SIZE = 1073741824L; // 1GB
-    private static final String DATA_DIR = "./data";
+    private static final long SEGMENT_SIZE = 1073741824L; // 1GB TODO: put in const or config
+    private static final String DATA_DIR = "./data"; // TODO: put in config
 
     public WriteAheadLog(String topic, Integer partition) {
         this.topic = topic;
@@ -36,6 +42,7 @@ public class WriteAheadLog {
         this.logDirectory = Paths.get(DATA_DIR, "logs", topic, String.valueOf(partition));
         this.nextOffset = new AtomicLong(0);
         this.highWaterMark = new AtomicLong(0);
+        this.logEndOffset = new AtomicLong(0);
         
         initializeLog();
     }
@@ -56,7 +63,8 @@ public class WriteAheadLog {
     }
 
     /**
-     * Append message to log
+     * Append message to log and return assigned offset
+     * Step 2: Assigns offsets to messages atomically
      */
     public long append(Message message) {
         synchronized (this) {
@@ -64,12 +72,15 @@ public class WriteAheadLog {
             message.setOffset(offset);
             
             try {
-                // Check if we need to roll to new segment
+                // if max segment size is exceeded; roll to a new segment to keep the log manageable
                 if (currentSegment.size() >= SEGMENT_SIZE) {
                     rollSegment();
                 }
                 
                 currentSegment.append(message);
+                
+                // Update Log End Offset (LEO)
+                logEndOffset.set(offset + 1);
                 
                 log.debug("Appended message at offset {}", offset);
                 
@@ -137,7 +148,22 @@ public class WriteAheadLog {
         highWaterMark.set(offset);
     }
 
+    public long getLogEndOffset() {
+        return logEndOffset.get();
+    }
+
+    public void updateLogEndOffset(long offset) {
+        logEndOffset.set(offset);
+    }
+
     // TODO: Add segment cleanup based on retention policy
     // TODO: Add log compaction
+
     // TODO: Add index for faster lookups
+        // Implement an offset-to-position index to enable O(1) seeks within segments.
+        // This index maps message offsets to their byte positions in the log file,
+        // allowing efficient random access reads without scanning the entire segment.
+        // Use a sparse index (e.g., every 4KB or configurable interval) to balance
+        // memory usage and lookup speed. Store index entries in memory and persist
+        // to disk for recovery.
 }

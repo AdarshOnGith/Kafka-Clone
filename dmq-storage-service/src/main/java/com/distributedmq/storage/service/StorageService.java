@@ -11,9 +11,10 @@ import com.distributedmq.common.dto.ProduceResponse;
 public interface StorageService {
 
     /**
-     * Append message to partition
+     * Append batch of messages to partition
+     * Step 2: Append Messages to Partition Log
      */
-    ProduceResponse append(ProduceRequest request);
+    ProduceResponse appendMessages(ProduceRequest request);
 
     /**
      * Fetch messages from partition
@@ -29,6 +30,16 @@ public interface StorageService {
      * Flush all pending writes
      */
     void flush();
+
+    /**
+     * Check if this broker is leader for partition
+     */
+    boolean isLeaderForPartition(String topic, Integer partition);
+
+    /**
+     * Get log end offset for partition
+     */
+    Long getLogEndOffset(String topic, Integer partition);
 
     // TODO: Add replication methods
     // TODO: Add partition creation/deletion methods

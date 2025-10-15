@@ -125,7 +125,7 @@ public class MetadataController {
      * Get controller leader info
      */
     @GetMapping("/controller")
-    public ResponseEntity<?> getControllerInfo() {
+    public ResponseEntity<ControllerInfo> getControllerInfo() {
         return ResponseEntity.ok(new ControllerInfo(
                 raftController.isControllerLeader(),
                 raftController.getControllerLeaderId(),
@@ -137,5 +137,19 @@ public class MetadataController {
     // TODO: Add endpoints for offset management
     // TODO: Add cluster health endpoints
     
-    private record ControllerInfo(boolean isLeader, Integer leaderId, long term) {}
+    public static class ControllerInfo {
+        private final boolean isLeader;
+        private final Integer leaderId;
+        private final long term;
+        
+        public ControllerInfo(boolean isLeader, Integer leaderId, long term) {
+            this.isLeader = isLeader;
+            this.leaderId = leaderId;
+            this.term = term;
+        }
+        
+        public boolean isLeader() { return isLeader; }
+        public Integer getLeaderId() { return leaderId; }
+        public long getTerm() { return term; }
+    }
 }

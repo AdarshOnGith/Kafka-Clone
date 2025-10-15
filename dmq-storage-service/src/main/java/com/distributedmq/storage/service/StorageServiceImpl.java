@@ -19,9 +19,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * Implementation of StorageService
  * Manages WAL and message persistence
  */
-@Slf4j
-@Service
-@RequiredArgsConstructor
+
+@Slf4j       // Injects log for logging
+@Servic           // Marks as a Spring component
+@RequiredArgsConstructor // Generates constructor for 'final' fields
+
 public class StorageServiceImpl implements StorageService {
 
     // Map of topic-partition to WAL
@@ -30,54 +32,108 @@ public class StorageServiceImpl implements StorageService {
     private final ReplicationManager replicationManager;
 
     @Override
-    public ProduceResponse append(ProduceRequest request) {
+    public ProduceResponse appendMessages(ProduceRequest request) {
         String topicPartition = getTopicPartitionKey(request.getTopic(), request.getPartition());
-        
-        log.debug("Appending message to {}", topicPartition);
+
+        log.info("Attempting to append {} messages to {}", 
+                request.getMessages().size(), topicPartition);
         
         // Get or create WAL for partition
+        //topicPartition is k (key), if absent, create new WAL with key k = topicPartition
         WriteAheadLog wal = partitionLogs.computeIfAbsent(
                 topicPartition,
                 k -> new WriteAheadLog(request.getTopic(), request.getPartition())
         );
         
         try {
-            // Create message
-            Message message = Message.builder()
-                    .key(request.getKey())
-                    .value(request.getValue())
-                    .topic(request.getTopic())
-                    .partition(request.getPartition())
-                    .timestamp(System.currentTimeMillis())
-                    .build();
+            List<ProduceResponse.ProduceResult> results = new ArrayList<>();
+            long baseOffset = -1;
             
-            // Append to WAL
-            long offset = wal.append(message);
-            message.setOffset(offset);
-            
-            // Replicate to followers
-            if (request.getRequiredAcks() != 0) {
-                replicationManager.replicate(message);
+            // Step 1: Append Messages to Partition Log
+            // Synchronizes on WAL(monitor lock on wal) to prevent race conditions and ensure thread-safe message writes
+            synchronized (wal) {
+                for (ProduceRequest.ProduceMessage produceMessage : request.getMessages()) {
+                    // Create message
+                    Message message = Message.builder()
+                            .key(produceMessage.getKey())
+                            .value(produceMessage.getValue())
+                            .topic(request.getTopic())
+                            .partition(request.getPartition())
+                            .timestamp(produceMessage.getTimestamp() != null ? 
+                                     produceMessage.getTimestamp() : System.currentTimeMillis())
+                            .build();
+                    
+                    // Append to WAL and assign offset
+                    long offset = wal.append(message);
+                    message.setOffset(offset);
+                    
+                    if (baseOffset == -1) {
+                        baseOffset = offset;
+                    }
+                    
+                    results.add(ProduceResponse.ProduceResult.builder()
+                            .offset(offset)
+                            .timestamp(message.getTimestamp())
+                            .errorCode(ProduceResponse.ErrorCode.NONE)
+                            .build());
+                    
+                    log.debug("Message appended at offset: {}", offset);
+                }
             }
             
-            log.debug("Message appended at offset: {}", offset);
+            // Step 2: Replicate to Followers
+            if (request.getRequiredAcks() != null && request.getRequiredAcks() != 0) {
+                boolean replicationSuccess = replicationManager.replicateBatch(
+                        request.getTopic(),
+                        request.getPartition(),
+                        request.getMessages(),
+                        baseOffset,
+                        request.getRequiredAcks()
+                );
+
+                if (!replicationSuccess) {
+                    // TODO: Handle replication failure based on acks policy
+                    // For now, assume acks=-1 (wait for all followers to commit)
+                    // If replication fails, return error to producer
+                    log.error("Replication failed for topic-partition: {}, cannot acknowledge producer", topicPartition);
+                    return ProduceResponse.builder()
+                            .topic(request.getTopic())
+                            .partition(request.getPartition())
+                            .success(false)
+                            .errorCode(ProduceResponse.ErrorCode.INVALID_REQUEST)
+                            .errorMessage("Replication to followers failed")
+                            .build();
+                }
+            }
             
+            // Step 3: Update Offsets
+            // Log End Offset (LEO) is already updated in WAL.append()
+            // High Watermark (HW) needs to be updated after successful replication
+            if (request.getRequiredAcks() != null && request.getRequiredAcks() != 0) {
+                // After successful replication, update High Watermark to LEO
+                long currentLeo = wal.getLogEndOffset();
+                wal.updateHighWaterMark(currentLeo);
+                log.debug("Updated High Watermark to {} for topic-partition: {}", currentLeo, topicPartition);
+            }
+            
+            // Step 4: Send Acknowledgment to Producer
             return ProduceResponse.builder()
                     .topic(request.getTopic())
                     .partition(request.getPartition())
-                    .offset(offset)
-                    .timestamp(message.getTimestamp())
+                    .results(results)
                     .success(true)
+                    .errorCode(ProduceResponse.ErrorCode.NONE)
                     .build();
             
         } catch (Exception e) {
-            log.error("Error appending message", e);
+            log.error("Error appending messages to {}", topicPartition, e);
             
             return ProduceResponse.builder()
                     .topic(request.getTopic())
                     .partition(request.getPartition())
                     .success(false)
-                    .errorMessage(e.getMessage())
+                    .errorCode(ProduceResponse.ErrorCode.INVALID_REQUEST)
+                    .errorMessage("Failed to append messages: " + e.getMessage())
                     .build();
         }
     }
@@ -134,6 +190,21 @@ public class StorageServiceImpl implements StorageService {
         log.debug("Flushing all partition logs");
         
         partitionLogs.values().forEach(WriteAheadLog::flush);
+    }
+
+    @Override
+    public boolean isLeaderForPartition(String topic, Integer partition) {
+        // TODO: lookup: when i become leader, metadata service gives me metadata for my followers and for which partition i am leader, and i saved it locally
+        // For now, assume this broker is always the leader
+        return true;
+    }
+
+    @Override
+    public Long getLogEndOffset(String topic, Integer partition) {
+        String topicPartition = getTopicPartitionKey(topic, partition);
+        WriteAheadLog wal = partitionLogs.get(topicPartition);
+        
+        return wal != null ? wal.getLogEndOffset() : 0L;
     }
 
     private String getTopicPartitionKey(String topic, Integer partition) {
