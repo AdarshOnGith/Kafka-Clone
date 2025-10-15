@@ -1,0 +1,34 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: dmq-storage-service
+
+# Broker Configuration
+broker:
+  id: ${BROKER_ID:1}
+  host: ${BROKER_HOST:localhost}
+  port: ${BROKER_PORT:9092}
+  data-dir: ${DATA_DIR:./data/broker-1}
+
+# Metadata Service Configuration
+metadata:
+  service-url: http://localhost:8081
+
+# WAL Configuration
+wal:
+  segment-size-bytes: 1073741824  # 1GB
+  flush-interval-ms: 1000
+  retention-check-interval-ms: 300000  # 5 minutes
+
+# Replication Configuration
+replication:
+  fetch-max-bytes: 1048576  # 1MB
+  fetch-max-wait-ms: 500
+  replica-lag-time-max-ms: 10000
+
+logging:
+  level:
+    com.distributedmq: DEBUG
+    org.springframework: INFO
