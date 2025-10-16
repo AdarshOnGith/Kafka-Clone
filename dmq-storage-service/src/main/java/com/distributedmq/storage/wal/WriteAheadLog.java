@@ -36,10 +36,10 @@ public class WriteAheadLog {
 
     private final StorageConfig config;
 
-    public WriteAheadLog(String topic, Integer partition) {
+    public WriteAheadLog(String topic, Integer partition, StorageConfig config) {
         this.topic = topic;
         this.partition = partition;
-        this.config = new StorageConfig(); // TODO: Inject via Spring
+        this.config = config;
 
         this.logDirectory = Paths.get(config.getBrokerLogsDir(), topic, String.valueOf(partition));
         this.nextOffset = new AtomicLong(StorageConfig.DEFAULT_OFFSET);
@@ -53,15 +53,64 @@ public class WriteAheadLog {
         try {
             Files.createDirectories(logDirectory);
             
-            // Load existing segments or create new one
-            currentSegment = new LogSegment(logDirectory, 0);
+            // Recover from existing segments or create new one
+            recoverFromExistingSegments();
             
-            log.info("Initialized WAL for {}-{} at {}", topic, partition, logDirectory);
+            log.info("Initialized WAL for {}-{} at {} (nextOffset: {}, logEndOffset: {})", 
+                    topic, partition, logDirectory, nextOffset.get(), logEndOffset.get());
             
         } catch (IOException e) {
             log.error("Failed to initialize WAL", e);
             throw new RuntimeException("Failed to initialize WAL", e);
         }
+    }
+
+    /**
+     * Recover WAL state from existing log segments
+     */
+    private void recoverFromExistingSegments() throws IOException {
+        // Find all existing segment files
+        File[] segmentFiles = logDirectory.toFile().listFiles((dir, name) -> 
+            name.endsWith(StorageConfig.LOG_FILE_EXTENSION));
+        
+        if (segmentFiles == null || segmentFiles.length == 0) {
+            // No existing segments, create new one
+            currentSegment = new LogSegment(logDirectory, 0);
+            return;
+        }
+        
+        // Find the segment with the highest base offset
+        LogSegment latestSegment = null;
+        long maxBaseOffset = -1;
+        
+        for (File segmentFile : segmentFiles) {
+            String fileName = segmentFile.getName();
+            String baseOffsetStr = fileName.substring(0, fileName.length() - StorageConfig.LOG_FILE_EXTENSION.length());
+            long baseOffset = Long.parseLong(baseOffsetStr);
+            
+            if (baseOffset > maxBaseOffset) {
+                maxBaseOffset = baseOffset;
+                latestSegment = new LogSegment(logDirectory, baseOffset);
+            }
+        }
+        
+        currentSegment = latestSegment;
+        
+        // Recover offsets by reading the last message from the segment
+        long lastOffset = currentSegment.getLastOffset();
+        if (lastOffset >= 0) {
+            long recoveredOffset = lastOffset + 1;
+            nextOffset.set(recoveredOffset);
+            logEndOffset.set(recoveredOffset);
+            highWaterMark.set(Math.min(highWaterMark.get(), recoveredOffset));
+        } else {
+            // Empty segment, start from maxBaseOffset
+            nextOffset.set(maxBaseOffset);
+            logEndOffset.set(maxBaseOffset);
+        }
+        
+        log.info("Recovered WAL state: nextOffset={}, logEndOffset={}, highWaterMark={}", 
+                nextOffset.get(), logEndOffset.get(), highWaterMark.get());
     }
 
     /**

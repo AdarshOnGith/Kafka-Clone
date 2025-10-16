@@ -47,7 +47,7 @@ public class StorageServiceImpl implements StorageService {
         //topicPartition is k (key), if absent, create new WAL with key k = topicPartition
         WriteAheadLog wal = partitionLogs.computeIfAbsent(
                 topicPartition,
-                k -> new WriteAheadLog(request.getTopic(), request.getPartition())
+                k -> new WriteAheadLog(request.getTopic(), request.getPartition(), config)
         );
         
         try {

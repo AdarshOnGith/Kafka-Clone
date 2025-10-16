@@ -7,6 +7,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import javax.annotation.PostConstruct;
+
 /**
  * Centralized configuration for DMQ Storage Service
  * Contains all constants and configurable values
@@ -24,7 +26,24 @@ public class StorageConfig {
         private Integer id = 1;
         private String host = "localhost";
         private Integer port = 8081;  // Default port, can be overridden by BROKER_PORT env var
-        private String dataDir = "./data/broker-1";
+        private String dataDir;
+
+        /**
+         * Set the data directory based on broker ID to avoid conflicts
+         */
+        public void setId(Integer id) {
+            this.id = id;
+            if (this.dataDir == null || this.dataDir.isEmpty()) {
+                this.dataDir = "./data/broker-" + id;
+            }
+        }
+
+        /**
+         * Allow explicit data directory setting via environment variable
+         */
+        public void setDataDir(String dataDir) {
+            this.dataDir = dataDir;
+        }
     }
 
     // ========== METADATA SERVICE CONFIGURATION ==========
@@ -131,5 +150,15 @@ public class StorageConfig {
     @Bean
     public Jackson2ObjectMapperBuilderCustomizer jacksonCustomizer() {
         return builder -> builder.featuresToEnable(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE);
+    }
+
+    /**
+     * Ensure broker data directory is always set
+     */
+    @PostConstruct
+    public void initializeBrokerDataDir() {
+        if (broker.getDataDir() == null || broker.getDataDir().isEmpty()) {
+            broker.setDataDir("./data/broker-" + broker.getId());
+        }
     }
 }

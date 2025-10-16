@@ -3,22 +3,22 @@
   "partition": 0,
   "messages": [
     {
-      "key": "batch-1",
+      "key": "batch-12",
       "value": "TWVzc2FnZSAx",
       "timestamp": 1703123456789
     },
     {
-      "key": "batch-2",
+      "key": "batch-22",
       "value": "TWVzc2FnZSAy",
       "timestamp": 1703123456790
     },
     {
-      "key": "batch-3",
+      "key": "batch-32",
       "value": "TWVzc2FnZSAz",
       "timestamp": 1703123456791
     }
   ],
-  "producerId": "producer-batch",
+  "producerId": "producer02-batch",
   "producerEpoch": 1,
   "requiredAcks": 1,
   "timeoutMs": 5000
