@@ -104,6 +104,31 @@ public class LogSegment {
         return baos.toByteArray();
     }
 
+    /**
+     * Read the last message from the segment to get the last offset
+     */
+    public long getLastOffset() throws IOException {
+        if (currentSize == 0) {
+            return -1; // No messages
+        }
+        
+        try (FileInputStream fis = new FileInputStream(logFile);
+             DataInputStream dis = new DataInputStream(fis)) {
+            
+            long lastOffset = -1;
+            while (dis.available() > 0) {
+                int messageLength = dis.readInt();
+                long messageOffset = dis.readLong(); // offset is first field in message
+                lastOffset = messageOffset;
+                
+                // Skip the rest of the message
+                dis.skipBytes(messageLength - 8); // 8 bytes for offset
+            }
+            
+            return lastOffset;
+        }
+    }
+
     // TODO: Add deserialization method
     // TODO: Add CRC checksum
     // TODO: Add compression
