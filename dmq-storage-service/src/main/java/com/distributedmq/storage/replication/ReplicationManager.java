@@ -35,7 +35,7 @@ public class ReplicationManager {
     private final MetadataStore metadataStore;
 
     /**
-     * Replicate a batch of messages to all followers for the partition
+     * Replicate a batch of messages to all ISR (in-sync replicas) for the partition
      * @return true if replication successful based on requiredAcks, false otherwise
      */
     public boolean replicateBatch(String topic, Integer partition,
@@ -45,11 +45,12 @@ public class ReplicationManager {
         log.info("Starting replication for topic-partition {}-{} with {} messages, baseOffset: {}, requiredAcks: {}",
                 topic, partition, messages.size(), baseOffset, requiredAcks);
 
-        // Get followers for this partition
-        List<BrokerInfo> followers = metadataStore.getFollowersForPartition(topic, partition);
+        // Get ISR (in-sync replicas) for this partition to send replication requests
+        // ISR contains followers that are caught up and can reliably replicate messages
+        List<BrokerInfo> followers = metadataStore.getISRForPartition(topic, partition);
         if (followers.isEmpty()) {
-            log.warn("No followers found for partition {}-{}", topic, partition);
-            // If no followers and acks > 0, we need at least the leader ack
+            log.warn("No ISR found for partition {}-{}", topic, partition);
+            // If no ISR and acks > 0, we need at least the leader ack
             return requiredAcks == StorageConfig.ACKS_NONE; // Only succeed if acks=0 (no replication needed)
         }
 
@@ -65,7 +66,7 @@ public class ReplicationManager {
                 .requiredAcks(requiredAcks)
                 .build();
 
-        // Send replication requests to all followers asynchronously
+        // Send replication requests to all ISR asynchronously
         List<CompletableFuture<ReplicationAck>> replicationFutures = followers.stream()
                 .map(follower -> CompletableFuture.supplyAsync(() ->
                     replicateToFollower(follower, request)))
@@ -108,7 +109,7 @@ public class ReplicationManager {
                 replicationSuccessful = false; // Invalid acks value
             }
 
-            log.info("Replication completed for {}-{}: {}/{} followers acknowledged successfully",
+            log.info("Replication completed for {}-{}: {}/{} ISR acknowledged successfully",
                     topic, partition, successfulAcks, followers.size());
 
             return replicationSuccessful;

@@ -8,6 +8,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
+ * consider this class as updated information, as it will be keep updated by metadata service if any changes occur
+ * additioinally if some change is stale we will req metadata service for latest data upfront or in periodically after expiry time
+ * Also if storage node encounter any change in knowledge like follower is down etc then i will trigger update metadata req through contrller of cluster
  * Stores metadata about partitions, leaders, followers, and ISR
  * This data is updated by the metadata service
  */
@@ -123,7 +126,7 @@ public class MetadataStore {
     }
 
     /**
-     * Remove broker (when it goes offline)
+     * Remove broker (when it goes offline) -> may trigger metadata update through conntroller of cluster
      */
     public void removeBroker(Integer brokerId) {
         brokers.remove(brokerId);
@@ -148,8 +151,13 @@ public class MetadataStore {
         return topic + "-" + partition;
     }
 
-    // TODO: Add methods to sync with metadata service
+    // TODO: Add methods to sync with metadata service (for later implementation)
     // - fetchPartitionMetadata()
     // - registerBroker()
     // - heartbeat()
+    // - updateISR() - ISR management for advanced replication
+
+    // TODO: Add initialization methods for testing/basic setup (needed for replication flow)
+    // - initializeTestMetadata() - populate sample brokers and partition leadership
+    // - loadFromConfig() - load static metadata from configuration
 }

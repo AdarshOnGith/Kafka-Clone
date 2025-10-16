@@ -196,11 +196,13 @@ public class StorageController {
         return ProduceResponse.ErrorCode.NONE;
     }
 
-    // TODO: Add replication endpoints
-    // 1. POST /api/v1/storage/replicate - Receive replication requests from leader
-    // 2. GET /api/v1/storage/replicate/status - Check replication progress
-    // 3. POST /api/v1/storage/replicate/ack - Send replication acknowledgments
-    // 4. Implement follower-side validation and append logic
+    // TODO: Add remaining replication endpoints and features
+    //  GET /replicate/status	Leader asking, “How much have you processed?”
+    // POST /replicate/ack	Follower reporting, “I’ve stored up to here!”
+    // Leader epoch validation	Follower asking, “Are you still the valid leader?”
+    // ISR + lag detection	“You’re too slow — you're off the team (temporarily).”
+    // Metadata sync	Everyone updating their records about who’s leader now
+    // Replication timeout + retry	Retry delivery if confirmation doesn’t come in time
 
     /**
      * Receive replication requests from leader (follower endpoint)
