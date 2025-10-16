@@ -23,8 +23,8 @@ public class StorageController {
 
     private final StorageService storageService;
     /**
-     * Produce messages to partition (leader only)
-     * Endpoint: POST /api/v1/storage/messages
+     * HealthCheck
+     * Endpoint: GET /api/v1/storage/health
      */
     @GetMapping("/health")
     public ResponseEntity<String> healthCheck() {
