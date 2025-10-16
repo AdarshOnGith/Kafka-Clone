@@ -22,6 +22,14 @@ import org.springframework.web.bind.annotation.*;
 public class StorageController {
 
     private final StorageService storageService;
+    /**
+     * Produce messages to partition (leader only)
+     * Endpoint: POST /api/v1/storage/messages
+     */
+    @GetMapping("/health")
+    public ResponseEntity<String> healthCheck() {
+        return ResponseEntity.ok("Storage Service is up and running");
+    }
 
     /**
      * Produce messages to partition (leader only)
@@ -186,7 +194,7 @@ public class StorageController {
     // 2. GET /api/v1/storage/replicate/status - Check replication progress
     // 3. POST /api/v1/storage/replicate/ack - Send replication acknowledgments
     // 4. Implement follower-side validation and append logic
-    
+
     // TODO: Add partition management endpoints
     // 1. POST /api/v1/storage/partitions - Create new partition
     // 2. DELETE /api/v1/storage/partitions/{topic}/{partition} - Delete partition
