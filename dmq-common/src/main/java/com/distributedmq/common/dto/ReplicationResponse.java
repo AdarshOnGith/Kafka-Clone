@@ -1,0 +1,38 @@
+package com.distributedmq.common.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.List;
+
+/**
+ * Response from follower broker after processing replication request
+ */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class ReplicationResponse {
+    private String topic;
+    private Integer partition;
+    private Integer followerId; // Follower broker ID
+    private Long baseOffset; // Base offset that was replicated
+    private Integer messageCount; // Number of messages replicated
+    private boolean success;
+    private ErrorCode errorCode;
+    private String errorMessage;
+
+    // Replication timing
+    private Long replicationTimeMs;
+
+    public enum ErrorCode {
+        NONE,
+        INVALID_REQUEST,
+        NOT_FOLLOWER_FOR_PARTITION,
+        OFFSET_OUT_OF_ORDER,
+        STORAGE_ERROR,
+        TIMEOUT
+    }
+}
