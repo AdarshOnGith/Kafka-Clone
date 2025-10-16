@@ -2,7 +2,6 @@ package com.distributedmq.storage.replication;
 
 import com.distributedmq.common.dto.MetadataUpdateRequest;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,7 +15,6 @@ import java.util.stream.Collectors;
  * This data is updated by the metadata service
  */
 @Slf4j
-@Component
 public class MetadataStore {
 
     // topic-partition -> leader broker ID
@@ -39,6 +37,7 @@ public class MetadataStore {
 
     public void setLocalBrokerId(Integer brokerId) {
         this.localBrokerId = brokerId;
+        log.info("Local broker ID set to: {}", brokerId);
     }
 
     /**
@@ -113,7 +112,12 @@ public class MetadataStore {
     public boolean isFollowerForPartition(String topic, Integer partition) {
         String key = getPartitionKey(topic, partition);
         List<Integer> followers = partitionFollowers.get(key);
-        return followers != null && followers.contains(localBrokerId);
+        boolean result = followers != null && followers.contains(localBrokerId);
+
+        log.debug("isFollowerForPartition: topic={}, partition={}, key={}, followers={}, localBrokerId={}, result={}",
+                topic, partition, key, followers, localBrokerId, result);
+
+        return result;
     }
 
     /**

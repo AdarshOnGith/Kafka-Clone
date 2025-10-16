@@ -1,7 +1,10 @@
 package com.distributedmq.storage.config;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import lombok.Data;
+import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
@@ -13,16 +16,14 @@ import org.springframework.context.annotation.Configuration;
 @Data
 public class StorageConfig {
 
-    private int serverPort = 8082;
-
     // ========== BROKER CONFIGURATION ==========
     private BrokerConfig broker = new BrokerConfig();
 
     @Data
     public static class BrokerConfig {
-        private int id = 1;
+        private Integer id = 1;
         private String host = "localhost";
-        private int port = 9092;
+        private Integer port = 8081;  // Default port, can be overridden by BROKER_PORT env var
         private String dataDir = "./data/broker-1";
     }
 
@@ -39,9 +40,9 @@ public class StorageConfig {
 
     @Data
     public static class WalConfig {
-        private long segmentSizeBytes = 1073741824L; // 1GB
-        private int flushIntervalMs = 1000;
-        private long retentionCheckIntervalMs = 300000; // 5 minutes
+        private Long segmentSizeBytes = 1073741824L; // 1GB
+        private Integer flushIntervalMs = 1000;
+        private Long retentionCheckIntervalMs = 300000L; // 5 minutes
         private String dataDir = "./data";
         private String logsDir = "logs";
     }
@@ -51,9 +52,9 @@ public class StorageConfig {
 
     @Data
     public static class ReplicationConfig {
-        private int fetchMaxBytes = 1048576; // 1MB
-        private int fetchMaxWaitMs = 500;
-        private long replicaLagTimeMaxMs = 10000;
+        private Integer fetchMaxBytes = 1048576; // 1MB
+        private Integer fetchMaxWaitMs = 500;
+        private Long replicaLagTimeMaxMs = 10000L;
     }
 
     // ========== CONSUMER CONFIGURATION ==========
@@ -61,7 +62,7 @@ public class StorageConfig {
 
     @Data
     public static class ConsumerConfig {
-        private int defaultMaxMessages = 100;
+        private Integer defaultMaxMessages = 100;
     }
 
     // ========== CONSTANTS ==========
@@ -122,5 +123,13 @@ public class StorageConfig {
      */
     public String getBrokerLogsDir() {
         return broker.getDataDir() + "/" + wal.getLogsDir();
+    }
+
+    /**
+     * Customize Jackson ObjectMapper to handle unknown enum values
+     */
+    @Bean
+    public Jackson2ObjectMapperBuilderCustomizer jacksonCustomizer() {
+        return builder -> builder.featuresToEnable(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE);
     }
 }

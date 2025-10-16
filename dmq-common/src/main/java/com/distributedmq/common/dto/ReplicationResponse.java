@@ -1,5 +1,6 @@
 package com.distributedmq.common.dto;
 
+import com.fasterxml.jackson.annotation.JsonEnumDefaultValue;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -29,6 +30,8 @@ public class ReplicationResponse {
 
     public enum ErrorCode {
         NONE,
+        @JsonEnumDefaultValue
+        UNKNOWN,
         INVALID_REQUEST,
         NOT_FOLLOWER_FOR_PARTITION,
         OFFSET_OUT_OF_ORDER,

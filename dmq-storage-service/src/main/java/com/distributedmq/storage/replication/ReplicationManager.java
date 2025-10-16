@@ -47,10 +47,21 @@ public class ReplicationManager {
 
         // Get ISR (in-sync replicas) for this partition to send replication requests
         // ISR contains followers that are caught up and can reliably replicate messages
-        List<BrokerInfo> followers = metadataStore.getISRForPartition(topic, partition);
-        if (followers.isEmpty()) {
+        List<BrokerInfo> isrBrokers = metadataStore.getISRForPartition(topic, partition);
+        if (isrBrokers.isEmpty()) {
             log.warn("No ISR found for partition {}-{}", topic, partition);
             // If no ISR and acks > 0, we need at least the leader ack
+            return requiredAcks == StorageConfig.ACKS_NONE; // Only succeed if acks=0 (no replication needed)
+        }
+
+        // Filter out the current broker (leader) from ISR - we don't replicate to ourselves
+        List<BrokerInfo> followers = isrBrokers.stream()
+                .filter(broker -> !broker.getId().equals(config.getBroker().getId()))
+                .collect(Collectors.toList());
+
+        if (followers.isEmpty()) {
+            log.warn("No followers found in ISR for partition {}-{} (ISR size: {})", topic, partition, isrBrokers.size());
+            // If no followers but acks > 0, we need at least the leader ack
             return requiredAcks == StorageConfig.ACKS_NONE; // Only succeed if acks=0 (no replication needed)
         }
 
@@ -109,7 +120,7 @@ public class ReplicationManager {
                 replicationSuccessful = false; // Invalid acks value
             }
 
-            log.info("Replication completed for {}-{}: {}/{} ISR acknowledged successfully",
+            log.info("Replication completed for {}-{}: {}/{} followers acknowledged successfully",
                     topic, partition, successfulAcks, followers.size());
 
             return replicationSuccessful;
