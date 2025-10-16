@@ -19,6 +19,7 @@ public class LogSegment {
     private final FileOutputStream fileOutputStream;
     private final DataOutputStream dataOutputStream;
     private long currentSize;
+    private static final int INT_BYTES = Integer.BYTES; // always 4 bytes in java
 
     public LogSegment(Path baseDir, long baseOffset) throws IOException {
         this.baseDir = baseDir;
@@ -42,14 +43,15 @@ public class LogSegment {
     public void append(Message message) throws IOException {
 
         // TODO: Implement proper serialization format
-        // Format: [size][crc][offset][timestamp][key_length][key][value_length][value]
+        // Ideal Format: [size][crc][offset][timestamp][key_length][key][value_length][value]
+        // Currently implemented:   [offset][timestamp][key_length][key][value_length][value]
         
         byte[] serialized = serializeMessage(message);
         
         dataOutputStream.writeInt(serialized.length);
         dataOutputStream.write(serialized);
         
-        currentSize += 4 + serialized.length;
+        currentSize += INT_BYTES + serialized.length;
     }
 
     /**
