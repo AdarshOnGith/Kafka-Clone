@@ -6,8 +6,11 @@ import com.distributedmq.common.dto.ProduceRequest;
 import com.distributedmq.common.dto.ProduceResponse;
 import com.distributedmq.common.dto.ReplicationRequest;
 import com.distributedmq.common.dto.ReplicationResponse;
+import com.distributedmq.common.dto.MetadataUpdateRequest;
+import com.distributedmq.common.dto.MetadataUpdateResponse;
 import com.distributedmq.storage.config.StorageConfig;
 import com.distributedmq.storage.config.StorageConfig;
+import com.distributedmq.storage.replication.MetadataStore;
 import com.distributedmq.storage.replication.ReplicationManager;
 import com.distributedmq.storage.service.StorageService;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +32,7 @@ public class StorageController {
     private final StorageService storageService;
     private final ReplicationManager replicationManager;
     private final StorageConfig config;
+    private final MetadataStore metadataStore;
     /**
      * HealthCheck
      * Endpoint: GET /api/v1/storage/health
@@ -233,6 +237,46 @@ public class StorageController {
                     .build());
         }
     }
+
+    /**
+     * Update metadata from metadata service (push model)
+     * Endpoint: POST /api/v1/storage/metadata
+     */
+    @PostMapping("/metadata")
+    public ResponseEntity<MetadataUpdateResponse> updateMetadata(
+            @Validated @RequestBody MetadataUpdateRequest request) {
+
+        log.info("Received metadata update from metadata service with {} brokers and {} partitions",
+                request.getBrokers() != null ? request.getBrokers().size() : 0,
+                request.getPartitions() != null ? request.getPartitions().size() : 0);
+
+        try {
+            // Update metadata in MetadataStore
+            metadataStore.updateMetadata(request);
+
+            return ResponseEntity.ok(MetadataUpdateResponse.builder()
+                    .success(true)
+                    .errorCode(MetadataUpdateResponse.ErrorCode.NONE)
+                    .processedTimestamp(System.currentTimeMillis())
+                    .brokerId(config.getBroker().getId())
+                    .build());
+
+        } catch (Exception e) {
+            log.error("Error processing metadata update", e);
+
+            return ResponseEntity.ok(MetadataUpdateResponse.builder()
+                    .success(false)
+                    .errorCode(MetadataUpdateResponse.ErrorCode.PROCESSING_ERROR)
+                    .errorMessage("Failed to update metadata: " + e.getMessage())
+                    .processedTimestamp(System.currentTimeMillis())
+                    .brokerId(config.getBroker().getId())
+                    .build());
+        }
+    }
+
+    // TODO: Add endpoint to request metadata from metadata service (pull model)
+    // This will be implemented when metadata service is available
+    // GET /api/v1/storage/metadata/refresh - Request latest metadata from metadata service
 
     // TODO: Add partition management endpoints
     // 1. POST /api/v1/storage/partitions - Create new partition

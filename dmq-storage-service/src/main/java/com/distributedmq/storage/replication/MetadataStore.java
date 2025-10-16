@@ -1,5 +1,6 @@
 package com.distributedmq.storage.replication;
 
+import com.distributedmq.common.dto.MetadataUpdateRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -38,6 +39,46 @@ public class MetadataStore {
 
     public void setLocalBrokerId(Integer brokerId) {
         this.localBrokerId = brokerId;
+    }
+
+    /**
+     * Update metadata from metadata service (bulk update)
+     * This replaces the current metadata with the new snapshot
+     */
+    public void updateMetadata(MetadataUpdateRequest request) {
+        log.info("Updating metadata: {} brokers, {} partitions",
+                request.getBrokers() != null ? request.getBrokers().size() : 0,
+                request.getPartitions() != null ? request.getPartitions().size() : 0);
+
+        // Update broker information
+        if (request.getBrokers() != null) {
+            for (MetadataUpdateRequest.BrokerInfo brokerInfo : request.getBrokers()) {
+                BrokerInfo broker = BrokerInfo.builder()
+                        .id(brokerInfo.getId())
+                        .host(brokerInfo.getHost())
+                        .port(brokerInfo.getPort())
+                        .isAlive(brokerInfo.isAlive())
+                        .lastHeartbeat(brokerInfo.getLastHeartbeat())
+                        .build();
+                updateBroker(broker);
+            }
+        }
+
+        // Update partition metadata
+        if (request.getPartitions() != null) {
+            for (MetadataUpdateRequest.PartitionMetadata partition : request.getPartitions()) {
+                updatePartitionLeadership(
+                        partition.getTopic(),
+                        partition.getPartition(),
+                        partition.getLeaderId(),
+                        partition.getFollowerIds(),
+                        partition.getIsrIds(),
+                        partition.getLeaderEpoch()
+                );
+            }
+        }
+
+        log.info("Metadata update completed at timestamp: {}", request.getTimestamp());
     }
 
     /**
@@ -150,6 +191,12 @@ public class MetadataStore {
     private String getPartitionKey(String topic, Integer partition) {
         return topic + "-" + partition;
     }
+
+    // TODO: Add methods to sync with metadata service (pull model - request metadata)
+    // These will be implemented when metadata service is available
+    // - requestMetadataRefresh() - Request latest metadata from metadata service
+    // - registerWithMetadataService() - Register this broker with metadata service
+    // - sendHeartbeat() - Send periodic heartbeats to metadata service
 
     // TODO: Add methods to sync with metadata service (for later implementation)
     // - fetchPartitionMetadata()
