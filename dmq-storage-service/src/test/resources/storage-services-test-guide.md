@@ -315,6 +315,51 @@ GET /api/v1/storage/partitions/test-topic/0/high-water-mark
 
 ---
 
+## 4. Replication (POST /replicate)
+
+**Endpoint:** `POST /api/v1/storage/replicate`
+
+**Purpose:** Receive replication requests from leader brokers (follower endpoint)
+
+**Note:** This endpoint is used internally by the replication system and is not typically called directly by clients.
+
+### Request Format
+```json
+{
+  "topic": "string",
+  "partition": 0,
+  "messages": [
+    {
+      "key": "string",
+      "value": "string",
+      "timestamp": 1234567890
+    }
+  ],
+  "baseOffset": 0,
+  "leaderId": 1,
+  "leaderEpoch": 1,
+  "timeoutMs": 500,
+  "requiredAcks": 1
+}
+```
+
+### Response Format
+```json
+{
+  "topic": "string",
+  "partition": 0,
+  "followerId": 2,
+  "baseOffset": 0,
+  "messageCount": 3,
+  "success": true,
+  "errorCode": "NONE",
+  "errorMessage": null,
+  "replicationTimeMs": 1234567890
+}
+```
+
+---
+
 ## 4. Error Scenarios
 
 ### 4.1 Leader Not Available (Simulated)
@@ -555,7 +600,7 @@ mvn clean install -DskipTests -q
 - High water mark management
 - Request validation
 - Leader election framework
-- Replication framework (simulated)
+- **Replication framework (network calls implemented)**
 
 ### ❌ Not Yet Implemented
 - Consumer message reading (WAL.read())
@@ -571,7 +616,7 @@ mvn clean install -DskipTests -q
 ## Next Steps for Development
 
 1. **Implement WAL.read()** for consumer functionality
-2. **Add network replication** using Netty
+2. ~~**Add network replication** using Netty~~ **✅ Network replication implemented**
 3. **Integrate with metadata service** for leader election
 4. **Implement ISR management**
 5. **Add comprehensive error handling**
@@ -581,3 +626,4 @@ mvn clean install -DskipTests -q
 
 *Last Updated: October 16, 2025*
 *Tested With: DMQ Storage Service v1.0.0-SNAPSHOT*
+*Replication: Network-based replication implemented*

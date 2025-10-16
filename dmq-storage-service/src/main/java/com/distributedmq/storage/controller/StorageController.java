@@ -1,9 +1,14 @@
 package com.distributedmq.storage.controller;
 
-import com.distributedmq.common.dto.ProduceRequest;
-import com.distributedmq.common.dto.ProduceResponse;
 import com.distributedmq.common.dto.ConsumeRequest;
 import com.distributedmq.common.dto.ConsumeResponse;
+import com.distributedmq.common.dto.ProduceRequest;
+import com.distributedmq.common.dto.ProduceResponse;
+import com.distributedmq.common.dto.ReplicationRequest;
+import com.distributedmq.common.dto.ReplicationResponse;
+import com.distributedmq.storage.config.StorageConfig;
+import com.distributedmq.storage.config.StorageConfig;
+import com.distributedmq.storage.replication.ReplicationManager;
 import com.distributedmq.storage.service.StorageService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +27,8 @@ import org.springframework.web.bind.annotation.*;
 public class StorageController {
 
     private final StorageService storageService;
+    private final ReplicationManager replicationManager;
+    private final StorageConfig config;
     /**
      * HealthCheck
      * Endpoint: GET /api/v1/storage/health
@@ -166,9 +173,9 @@ public class StorageController {
         
         // Validate acks
         if (request.getRequiredAcks() != null && 
-            request.getRequiredAcks() != 0 && 
-            request.getRequiredAcks() != 1 && 
-            request.getRequiredAcks() != -1) {
+            request.getRequiredAcks() != StorageConfig.ACKS_NONE && 
+            request.getRequiredAcks() != StorageConfig.ACKS_LEADER && 
+            request.getRequiredAcks() != StorageConfig.ACKS_ALL) {
             return ProduceResponse.ErrorCode.INVALID_REQUEST;
         }
 
@@ -194,6 +201,36 @@ public class StorageController {
     // 2. GET /api/v1/storage/replicate/status - Check replication progress
     // 3. POST /api/v1/storage/replicate/ack - Send replication acknowledgments
     // 4. Implement follower-side validation and append logic
+
+    /**
+     * Receive replication requests from leader (follower endpoint)
+     * Endpoint: POST /api/v1/storage/replicate
+     */
+    @PostMapping("/replicate")
+    public ResponseEntity<ReplicationResponse> replicateMessages(
+            @Validated @RequestBody ReplicationRequest request) {
+
+        log.info("Received replication request from leader {} for topic: {}, partition: {}, messageCount: {}",
+                request.getLeaderId(), request.getTopic(), request.getPartition(),
+                request.getMessages() != null ? request.getMessages().size() : 0);
+
+        try {
+            ReplicationResponse response = replicationManager.processReplicationRequest(request, storageService);
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            log.error("Error processing replication request", e);
+
+            return ResponseEntity.ok(ReplicationResponse.builder()
+                    .topic(request.getTopic())
+                    .partition(request.getPartition())
+                    .followerId(config.getBroker().getId()) // Get from config
+                    .success(false)
+                    .errorCode(ReplicationResponse.ErrorCode.STORAGE_ERROR)
+                    .errorMessage("Internal server error: " + e.getMessage())
+                    .build());
+        }
+    }
 
     // TODO: Add partition management endpoints
     // 1. POST /api/v1/storage/partitions - Create new partition

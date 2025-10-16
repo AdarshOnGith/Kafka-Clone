@@ -85,6 +85,15 @@ public class StorageConfig {
     public static final long DEFAULT_HIGH_WATER_MARK = 0L;
     public static final long DEFAULT_LOG_END_OFFSET = 0L;
 
+    // ========== REPLICATION CONSTANTS ==========
+    // Acknowledgment levels
+    public static final int ACKS_NONE = 0;        // No acknowledgment required
+    public static final int ACKS_LEADER = 1;      // Leader acknowledgment required
+    public static final int ACKS_ALL = -1;        // All ISR acknowledgment required
+
+    // Replication settings
+    public static final int FOLLOWER_ACKS = 0;    // Followers don't replicate further
+
     // ========== DERIVED PATHS ==========
 
     /**

@@ -6,6 +6,8 @@ import com.distributedmq.common.dto.ProduceRequest;
 import com.distributedmq.common.dto.ProduceResponse;
 import com.distributedmq.common.model.Message;
 import com.distributedmq.storage.config.StorageConfig;
+import com.distributedmq.storage.replication.MetadataStore;
+import com.distributedmq.storage.replication.ReplicationManager;
 import com.distributedmq.storage.wal.WriteAheadLog;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,6 +34,7 @@ public class StorageServiceImpl implements StorageService {
     
     private final ReplicationManager replicationManager;
     private final StorageConfig config;
+    private final MetadataStore metadataStore;
 
     @Override
     public ProduceResponse appendMessages(ProduceRequest request) {
@@ -196,9 +199,8 @@ public class StorageServiceImpl implements StorageService {
 
     @Override
     public boolean isLeaderForPartition(String topic, Integer partition) {
-        // TODO: lookup: when i become leader, metadata service gives me metadata for my followers and for which partition i am leader, and i saved it locally
-        // For now, assume this broker is always the leader
-        return true;
+        // Use metadata store to check leadership
+        return metadataStore.isLeaderForPartition(topic, partition);
     }
 
     @Override
