@@ -4,13 +4,19 @@ server:
 spring:
   application:
     name: dmq-metadata-service
-  
+
+  # Use H2 for development (in-memory database)
   datasource:
-    url: jdbc:postgresql://localhost:5432/dmq_metadata
-    username: postgres
-    password: postgres
-    driver-class-name: org.postgresql.Driver
-  
+    url: jdbc:h2:mem:dmq_metadata;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
   jpa:
     hibernate:
       ddl-auto: update
@@ -18,13 +24,13 @@ spring:
     properties:
       hibernate:
         format_sql: true
-        dialect: org.hibernate.dialect.PostgreSQLDialect
+        dialect: org.hibernate.dialect.H2Dialect
 
 # KRaft Mode Configuration (Raft-based Controller)
 kraft:
   # This metadata service node configuration
   node-id: ${NODE_ID:1}
-  
+
   # Raft cluster configuration
   cluster:
     nodes:
@@ -37,7 +43,7 @@ kraft:
       - id: 3
         host: localhost
         port: 9095
-  
+
   # Raft consensus settings
   raft:
     election-timeout-ms: 1000
@@ -50,7 +56,7 @@ controller:
   # Broker heartbeat settings
   broker-heartbeat-interval-ms: 3000
   broker-session-timeout-ms: 10000
-  
+
 logging:
   level:
     com.distributedmq: DEBUG

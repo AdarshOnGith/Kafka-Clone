@@ -1,5 +1,6 @@
 package com.distributedmq.metadata.controller;
 
+import com.distributedmq.common.model.TopicMetadata;
 import com.distributedmq.metadata.coordination.RaftController;
 import com.distributedmq.metadata.dto.CreateTopicRequest;
 import com.distributedmq.metadata.dto.TopicMetadataResponse;
@@ -51,13 +52,27 @@ public class MetadataController {
                     .build();
         }
         
-        // TODO: Add sanity checks and validation
-        // TODO: Submit to Raft log for consensus
-        // TODO: Wait for commit
-        // TODO: Call metadataService.createTopic(request)
-        // TODO: Return proper response
-        
-        return ResponseEntity.ok(new TopicMetadataResponse());
+        try {
+            TopicMetadata metadata = metadataService.createTopic(request);
+            
+            TopicMetadataResponse response = TopicMetadataResponse.builder()
+                    .topicName(metadata.getTopicName())
+                    .partitionCount(metadata.getPartitionCount())
+                    .replicationFactor(metadata.getReplicationFactor())
+                    .partitions(metadata.getPartitions())
+                    .createdAt(metadata.getCreatedAt())
+                    .config(metadata.getConfig())
+                    .build();
+            
+            return ResponseEntity.ok(response);
+            
+        } catch (IllegalArgumentException e) {
+            log.warn("Topic creation failed: {}", e.getMessage());
+            return ResponseEntity.badRequest().build();
+        } catch (Exception e) {
+            log.error("Error creating topic", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
     }
 
     /**
@@ -70,9 +85,27 @@ public class MetadataController {
         
         log.debug("Fetching metadata for topic: {}", topicName);
         
-        // TODO: Implement metadata retrieval
-        
-        return ResponseEntity.ok(new TopicMetadataResponse());
+        try {
+            TopicMetadata metadata = metadataService.getTopicMetadata(topicName);
+            
+            TopicMetadataResponse response = TopicMetadataResponse.builder()
+                    .topicName(metadata.getTopicName())
+                    .partitionCount(metadata.getPartitionCount())
+                    .replicationFactor(metadata.getReplicationFactor())
+                    .partitions(metadata.getPartitions())
+                    .createdAt(metadata.getCreatedAt())
+                    .config(metadata.getConfig())
+                    .build();
+            
+            return ResponseEntity.ok(response);
+            
+        } catch (IllegalArgumentException e) {
+            log.warn("Topic not found: {}", topicName);
+            return ResponseEntity.notFound().build();
+        } catch (Exception e) {
+            log.error("Error fetching topic metadata", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
     }
 
     /**
@@ -83,9 +116,14 @@ public class MetadataController {
     public ResponseEntity<List<String>> listTopics() {
         log.debug("Listing all topics");
         
-        // TODO: Implement topic listing
-        
-        return ResponseEntity.ok(List.of());
+        try {
+            List<String> topics = metadataService.listTopics();
+            return ResponseEntity.ok(topics);
+            
+        } catch (Exception e) {
+            log.error("Error listing topics", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
     }
 
     /**
@@ -103,10 +141,17 @@ public class MetadataController {
                     .build();
         }
         
-        // TODO: Submit to Raft log for consensus
-        // TODO: Implement topic deletion
-        
-        return ResponseEntity.noContent().build();
+        try {
+            metadataService.deleteTopic(topicName);
+            return ResponseEntity.noContent().build();
+            
+        } catch (IllegalArgumentException e) {
+            log.warn("Topic deletion failed: {}", e.getMessage());
+            return ResponseEntity.notFound().build();
+        } catch (Exception e) {
+            log.error("Error deleting topic", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
     }
 
     /**

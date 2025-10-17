@@ -1,6 +1,9 @@
 package com.distributedmq.metadata.entity;
 
+import com.distributedmq.common.model.TopicConfig;
 import com.distributedmq.common.model.TopicMetadata;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import javax.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -34,27 +37,69 @@ public class TopicEntity {
     @Column(nullable = false)
     private Long createdAt;
 
-    // Configuration stored as JSON or separate table
+    // Configuration stored as JSON
     @Column(columnDefinition = "TEXT")
     private String configJson;
 
-    // TODO: Add method to convert TopicMetadata to TopicEntity
+    // Timestamp for metadata synchronization
+    @Column(nullable = false)
+    private Long lastUpdatedAt;
+
+    private static final ObjectMapper objectMapper = new ObjectMapper();
+
+    /**
+     * Convert TopicMetadata to TopicEntity
+     */
     public static TopicEntity fromMetadata(TopicMetadata metadata) {
-        // TODO: Implement conversion logic
-        // TODO: Serialize TopicConfig to JSON string
-        return new TopicEntity();
+        try {
+            String configJson = objectMapper.writeValueAsString(metadata.getConfig());
+            long now = System.currentTimeMillis();
+
+            return TopicEntity.builder()
+                    .topicName(metadata.getTopicName())
+                    .partitionCount(metadata.getPartitionCount())
+                    .replicationFactor(metadata.getReplicationFactor())
+                    .createdAt(metadata.getCreatedAt() != null ? metadata.getCreatedAt() : now)
+                    .configJson(configJson)
+                    .lastUpdatedAt(now)
+                    .build();
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Failed to serialize topic config", e);
+        }
     }
 
-    // TODO: Add method to convert TopicEntity to TopicMetadata
+    /**
+     * Convert TopicEntity to TopicMetadata
+     */
     public TopicMetadata toMetadata() {
-        // TODO: Implement conversion logic
-        // TODO: Deserialize JSON string to TopicConfig
-        return TopicMetadata.builder().build();
+        try {
+            TopicMetadata.TopicMetadataBuilder builder = TopicMetadata.builder()
+                    .topicName(topicName)
+                    .partitionCount(partitionCount)
+                    .replicationFactor(replicationFactor)
+                    .createdAt(createdAt);
+
+            if (configJson != null && !configJson.isEmpty()) {
+                builder.config(objectMapper.readValue(configJson, TopicConfig.class));
+            }
+
+            return builder.build();
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Failed to deserialize topic config", e);
+        }
     }
 
-    // TODO: Add method to update entity from metadata
+    /**
+     * Update entity from metadata
+     */
     public void updateFromMetadata(TopicMetadata metadata) {
-        // TODO: Update entity fields from metadata
-        // TODO: Update configJson from TopicConfig
+        try {
+            this.partitionCount = metadata.getPartitionCount();
+            this.replicationFactor = metadata.getReplicationFactor();
+            this.configJson = objectMapper.writeValueAsString(metadata.getConfig());
+            this.lastUpdatedAt = System.currentTimeMillis();
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Failed to serialize topic config", e);
+        }
     }
 }

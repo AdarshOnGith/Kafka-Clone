@@ -45,7 +45,10 @@ public class RaftController {
         // TODO: Start heartbeat sender (if leader)
         // TODO: Start heartbeat listener (if follower)
         
-        log.info("Raft Controller initialized in FOLLOWER state");
+        // For testing: Make this node the leader
+        becomeLeader();
+        
+        log.info("Raft Controller initialized in LEADER state for testing");
     }
 
     @PreDestroy
@@ -58,17 +61,13 @@ public class RaftController {
     }
 
     /**
-     * Start leader election process
+     * Become the leader (for testing purposes)
      */
-    public void startElection() {
-        log.info("Starting leader election for term: {}", currentTerm + 1);
-        
-        // TODO: Increment current term
-        // TODO: Vote for self
-        // TODO: Send RequestVote RPC to all peers
-        // TODO: Wait for majority votes
-        // TODO: Transition to LEADER if majority achieved
-        // TODO: Start sending heartbeats to maintain leadership
+    private void becomeLeader() {
+        this.isLeader = true;
+        this.currentLeaderId = nodeId;
+        this.currentTerm = 1; // Start with term 1
+        log.info("Node {} became the controller leader for term {}", nodeId, currentTerm);
     }
 
     /**
