@@ -6,18 +6,20 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.io.*;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Represents a single log segment file
  */
 @Slf4j
-public class LogSegment {
+public class LogSegment implements AutoCloseable {
 
     private final Path baseDir;
     private final long baseOffset;
     private final File logFile;
-    private final FileOutputStream fileOutputStream;
-    private final DataOutputStream dataOutputStream;
+    private FileOutputStream fileOutputStream;
+    private DataOutputStream dataOutputStream;
     private long currentSize;
     private static final int INT_BYTES = Integer.BYTES; // always 4 bytes in java
 
@@ -65,10 +67,9 @@ public class LogSegment {
     /**
      * Close segment
      */
+    @Override
     public void close() throws IOException {
-        flush();
-        dataOutputStream.close();
-        fileOutputStream.close();
+        closeOutputStreams();
     }
 
     public long size() {
@@ -105,6 +106,40 @@ public class LogSegment {
     }
 
     /**
+     * Deserialize message from bytes
+     */
+    private Message deserializeMessage(byte[] data) throws IOException {
+        DataInputStream dis = new DataInputStream(new ByteArrayInputStream(data));
+        
+        // Read offset
+        long offset = dis.readLong();
+        
+        // Read timestamp
+        long timestamp = dis.readLong();
+        
+        // Read key
+        int keyLength = dis.readInt();
+        String key = null;
+        if (keyLength != StorageConfig.NULL_KEY_LENGTH) {
+            byte[] keyBytes = new byte[keyLength];
+            dis.readFully(keyBytes);
+            key = new String(keyBytes);
+        }
+        
+        // Read value
+        int valueLength = dis.readInt();
+        byte[] value = new byte[valueLength];
+        dis.readFully(value);
+        
+        return Message.builder()
+                .offset(offset)
+                .timestamp(timestamp)
+                .key(key)
+                .value(value)
+                .build();
+    }
+
+    /**
      * Read the last message from the segment to get the last offset
      */
     public long getLastOffset() throws IOException {
@@ -129,7 +164,83 @@ public class LogSegment {
         }
     }
 
-    // TODO: Add deserialization method
+    /**
+     * Read messages from this segment starting from the given offset
+     */
+    public List<Message> readFromOffset(long startOffset, int maxMessages) throws IOException {
+        List<Message> messages = new ArrayList<>();
+        
+        // Close output streams to allow reading
+        closeOutputStreams();
+        
+        if (currentSize == 0) {
+            return messages;
+        }
+        
+        try (FileInputStream fis = new FileInputStream(logFile);
+             DataInputStream dis = new DataInputStream(fis)) {
+            
+            while (dis.available() > 0 && messages.size() < maxMessages) {
+                int messageLength = dis.readInt();
+                byte[] messageData = new byte[messageLength];
+                dis.readFully(messageData);
+                
+                Message message = deserializeMessage(messageData);
+                
+                // Only include messages at or after the start offset
+                if (message.getOffset() >= startOffset) {
+                    messages.add(message);
+                }
+            }
+        }
+        
+        // Reopen output streams for future writes
+        reopenOutputStreams();
+        
+        return messages;
+    }
+
+    /**
+     * Get the base offset of this segment
+     */
+    public long getBaseOffset() {
+        return baseOffset;
+    }
+
+    /**
+     * Close output streams to allow reading
+     */
+    private void closeOutputStreams() throws IOException {
+        if (dataOutputStream != null) {
+            try {
+                dataOutputStream.close();
+            } catch (IOException e) {
+                log.warn("Failed to close data output stream", e);
+            } finally {
+                dataOutputStream = null;
+            }
+        }
+        if (fileOutputStream != null) {
+            try {
+                fileOutputStream.close();
+            } catch (IOException e) {
+                log.warn("Failed to close file output stream", e);
+            } finally {
+                fileOutputStream = null;
+            }
+        }
+    }
+
+    /**
+     * Reopen output streams for writing
+     */
+    private void reopenOutputStreams() throws IOException {
+        if (fileOutputStream == null) {
+            this.fileOutputStream = new FileOutputStream(logFile, true);
+            this.dataOutputStream = new DataOutputStream(fileOutputStream);
+        }
+    }
+
     // TODO: Add CRC checksum
     // TODO: Add compression
 }

@@ -217,8 +217,8 @@ public class ReplicationManager {
                     .requiredAcks(StorageConfig.FOLLOWER_ACKS) // Followers don't need to replicate further
                     .build();
 
-            // Process the messages through StorageService
-            ProduceResponse produceResponse = storageService.appendMessages(produceRequest);
+            // Process the messages through StorageService (use replicateMessages for followers)
+            ProduceResponse produceResponse = storageService.replicateMessages(produceRequest);
 
             if (produceResponse.isSuccess()) {
                 log.info("Successfully replicated {} messages for topic-partition {}-{}",

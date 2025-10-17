@@ -74,6 +74,7 @@ public class StorageConfig {
         private Integer fetchMaxBytes = 1048576; // 1MB
         private Integer fetchMaxWaitMs = 500;
         private Long replicaLagTimeMaxMs = 10000L;
+        private Integer minInsyncReplicas = 1; // Minimum ISR required for HW advancement
     }
 
     // ========== CONSUMER CONFIGURATION ==========
@@ -113,6 +114,8 @@ public class StorageConfig {
 
     // Replication settings
     public static final int FOLLOWER_ACKS = 0;    // Followers don't replicate further
+    public static final int MIN_ISR_DEFAULT = 1;
+    public static final int FETCH_MAX_WAIT_DEFAULT = 500;
 
     // ========== DERIVED PATHS ==========
 
