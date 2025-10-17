@@ -4,13 +4,15 @@ import com.distributedmq.metadata.coordination.RaftController;
 import com.distributedmq.metadata.dto.CreateTopicRequest;
 import com.distributedmq.metadata.dto.TopicMetadataResponse;
 import com.distributedmq.metadata.service.MetadataService;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -18,15 +20,19 @@ import java.util.List;
  * Entry point with request validation
  * 
  * Routes requests to controller leader in KRaft mode
+ * 
+ * Note: Dependencies are optional for Phase 1 testing without database
  */
 @Slf4j
 @RestController
 @RequestMapping("/api/v1/metadata")
-@RequiredArgsConstructor
 public class MetadataController {
 
-    private final MetadataService metadataService;
-    private final RaftController raftController;
+    @Autowired(required = false)
+    private MetadataService metadataService;
+    
+    @Autowired(required = false)
+    private RaftController raftController;
 
     /**
      * Create a new topic
@@ -37,6 +43,13 @@ public class MetadataController {
             @Validated @RequestBody CreateTopicRequest request) {
         
         log.info("Received request to create topic: {}", request.getTopicName());
+        
+        // Phase 1: Service not fully initialized
+        if (raftController == null) {
+            log.warn("⚠️  Phase 1 mode: RaftController not available (database disabled)");
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .build();
+        }
         
         // Check if this node is the controller leader
         if (!raftController.isControllerLeader()) {
@@ -62,14 +75,74 @@ public class MetadataController {
      * Can be served by any node (read operation)
      */
     @GetMapping("/topics/{topicName}")
-    public ResponseEntity<TopicMetadataResponse> getTopicMetadata(
+    public ResponseEntity<com.distributedmq.common.model.TopicMetadata> getTopicMetadata(
             @PathVariable String topicName) {
         
-        log.debug("Fetching metadata for topic: {}", topicName);
+        log.info("📥 Received request for topic metadata: {}", topicName);
         
-        // TODO: Implement metadata retrieval
+        // TODO: Implement real metadata retrieval from database
+        // For Phase 1: Return mock data
         
-        return ResponseEntity.ok(new TopicMetadataResponse());
+        log.info("⚠️  Returning mock metadata (Phase 1 stub)");
+        
+        // Create broker nodes
+        com.distributedmq.common.model.BrokerNode broker1 = com.distributedmq.common.model.BrokerNode.builder()
+                .brokerId(1).host("localhost").port(8082).status(com.distributedmq.common.model.BrokerStatus.ONLINE).build();
+        com.distributedmq.common.model.BrokerNode broker2 = com.distributedmq.common.model.BrokerNode.builder()
+                .brokerId(2).host("localhost").port(8083).status(com.distributedmq.common.model.BrokerStatus.ONLINE).build();
+        com.distributedmq.common.model.BrokerNode broker3 = com.distributedmq.common.model.BrokerNode.builder()
+                .brokerId(3).host("localhost").port(8084).status(com.distributedmq.common.model.BrokerStatus.ONLINE).build();
+        
+        List<com.distributedmq.common.model.BrokerNode> allReplicas = Arrays.asList(broker1, broker2, broker3);
+        
+        // Create mock partition metadata
+        List<com.distributedmq.common.model.PartitionMetadata> partitions = new ArrayList<>();
+        
+        // Partition 0 - Leader: Broker 1
+        partitions.add(com.distributedmq.common.model.PartitionMetadata.builder()
+                .topicName(topicName)
+                .partitionId(0)
+                .leader(broker1)
+                .replicas(allReplicas)
+                .isr(Arrays.asList(broker1, broker2))
+                .startOffset(0L)
+                .endOffset(100L)
+                .build());
+        
+        // Partition 1 - Leader: Broker 2
+        partitions.add(com.distributedmq.common.model.PartitionMetadata.builder()
+                .topicName(topicName)
+                .partitionId(1)
+                .leader(broker2)
+                .replicas(allReplicas)
+                .isr(Arrays.asList(broker2, broker3))
+                .startOffset(0L)
+                .endOffset(150L)
+                .build());
+        
+        // Partition 2 - Leader: Broker 3
+        partitions.add(com.distributedmq.common.model.PartitionMetadata.builder()
+                .topicName(topicName)
+                .partitionId(2)
+                .leader(broker3)
+                .replicas(allReplicas)
+                .isr(Arrays.asList(broker3, broker1))
+                .startOffset(0L)
+                .endOffset(200L)
+                .build());
+        
+        // Build topic metadata
+        com.distributedmq.common.model.TopicMetadata metadata = com.distributedmq.common.model.TopicMetadata.builder()
+                .topicName(topicName)
+                .partitionCount(3)
+                .replicationFactor(3)
+                .partitions(partitions)
+                .createdAt(System.currentTimeMillis())
+                .build();
+        
+        log.info("✅ Returning metadata for topic '{}': {} partitions", topicName, metadata.getPartitionCount());
+        
+        return ResponseEntity.ok(metadata);
     }
 
     /**

@@ -22,8 +22,12 @@ public class BrokerNode implements Serializable {
     private Integer port;
     private String rack;
     private BrokerStatus status;
+    private String address;
 
     public String getAddress() {
+        if (address != null) {
+            return address;
+        }
         return host + ":" + port;
     }
 }

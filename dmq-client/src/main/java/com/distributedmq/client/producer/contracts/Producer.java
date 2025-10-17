@@ -1,4 +1,4 @@
-package com.distributedmq.client.producer;
+package com.distributedmq.client.producer.contracts;
 
 import com.distributedmq.common.dto.ProduceRequest;
 import com.distributedmq.common.dto.ProduceResponse;
@@ -27,7 +27,7 @@ public interface Producer {
     ProduceResponse sendSync(String topic, String key, byte[] value);
 
     /**
-     * Flush any buffered messages
+     * Flush any pending operations
      */
     void flush();
 
@@ -36,7 +36,6 @@ public interface Producer {
      */
     void close();
 
-    // TODO: Add batch send support
     // TODO: Add transactional support
     // TODO: Add idempotent producer support
 }

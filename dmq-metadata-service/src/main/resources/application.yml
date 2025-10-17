@@ -5,6 +5,12 @@ spring:
   application:
     name: dmq-metadata-service
   
+  # Disable database for Phase 1 testing
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+  
   datasource:
     url: jdbc:postgresql://localhost:5432/dmq_metadata
     username: postgres

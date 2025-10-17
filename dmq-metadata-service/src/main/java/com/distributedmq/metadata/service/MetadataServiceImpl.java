@@ -3,8 +3,8 @@ package com.distributedmq.metadata.service;
 import com.distributedmq.common.model.TopicMetadata;
 import com.distributedmq.metadata.dto.CreateTopicRequest;
 import com.distributedmq.metadata.repository.TopicRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -13,14 +13,18 @@ import java.util.List;
 /**
  * Implementation of MetadataService
  * Business logic layer
+ * 
+ * Note: Dependencies are optional for Phase 1 testing without database
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class MetadataServiceImpl implements MetadataService {
 
-    private final TopicRepository topicRepository;
-    private final ControllerService controllerService;
+    @Autowired(required = false)
+    private TopicRepository topicRepository;
+    
+    @Autowired(required = false)
+    private ControllerService controllerService;
 
     @Override
     public TopicMetadata createTopic(CreateTopicRequest request) {
