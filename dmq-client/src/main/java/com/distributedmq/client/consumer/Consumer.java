@@ -11,9 +11,9 @@ import java.util.List;
 public interface Consumer {
 
     /**
-     * Subscribe to topics
+     * Subscribe to a single topic (Phase 1)
      */
-    void subscribe(Collection<String> topics);
+    void subscribe(String topic);
 
     /**
      * Subscribe to specific partitions
