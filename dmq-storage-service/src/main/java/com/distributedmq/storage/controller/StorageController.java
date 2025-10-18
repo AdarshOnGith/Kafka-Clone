@@ -1,9 +1,17 @@
 package com.distributedmq.storage.controller;
 
-import com.distributedmq.common.dto.ProduceRequest;
-import com.distributedmq.common.dto.ProduceResponse;
 import com.distributedmq.common.dto.ConsumeRequest;
 import com.distributedmq.common.dto.ConsumeResponse;
+import com.distributedmq.common.dto.ProduceRequest;
+import com.distributedmq.common.dto.ProduceResponse;
+import com.distributedmq.common.dto.ReplicationRequest;
+import com.distributedmq.common.dto.ReplicationResponse;
+import com.distributedmq.common.dto.MetadataUpdateRequest;
+import com.distributedmq.common.dto.MetadataUpdateResponse;
+import com.distributedmq.storage.config.StorageConfig;
+import com.distributedmq.storage.config.StorageConfig;
+import com.distributedmq.storage.replication.MetadataStore;
+import com.distributedmq.storage.replication.ReplicationManager;
 import com.distributedmq.storage.service.StorageService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +30,17 @@ import org.springframework.web.bind.annotation.*;
 public class StorageController {
 
     private final StorageService storageService;
+    private final ReplicationManager replicationManager;
+    private final StorageConfig config;
+    private final MetadataStore metadataStore;
+    /**
+     * HealthCheck
+     * Endpoint: GET /api/v1/storage/health
+     */
+    @GetMapping("/health")
+    public ResponseEntity<String> healthCheck() {
+        return ResponseEntity.ok("Storage Service is up and running");
+    }
 
     /**
      * Produce messages to partition (leader only)
@@ -158,9 +177,9 @@ public class StorageController {
         
         // Validate acks
         if (request.getRequiredAcks() != null && 
-            request.getRequiredAcks() != 0 && 
-            request.getRequiredAcks() != 1 && 
-            request.getRequiredAcks() != -1) {
+            request.getRequiredAcks() != StorageConfig.ACKS_NONE && 
+            request.getRequiredAcks() != StorageConfig.ACKS_LEADER && 
+            request.getRequiredAcks() != StorageConfig.ACKS_ALL) {
             return ProduceResponse.ErrorCode.INVALID_REQUEST;
         }
 
@@ -181,12 +200,84 @@ public class StorageController {
         return ProduceResponse.ErrorCode.NONE;
     }
 
-    // TODO: Add replication endpoints
-    // 1. POST /api/v1/storage/replicate - Receive replication requests from leader
-    // 2. GET /api/v1/storage/replicate/status - Check replication progress
-    // 3. POST /api/v1/storage/replicate/ack - Send replication acknowledgments
-    // 4. Implement follower-side validation and append logic
-    
+    // TODO: Add remaining replication endpoints and features
+    //  GET /replicate/status	Leader asking, “How much have you processed?”
+    // POST /replicate/ack	Follower reporting, “I’ve stored up to here!”
+    // Leader epoch validation	Follower asking, “Are you still the valid leader?”
+    // ISR + lag detection	“You’re too slow — you're off the team (temporarily).”
+    // Metadata sync	Everyone updating their records about who’s leader now
+    // Replication timeout + retry	Retry delivery if confirmation doesn’t come in time
+
+    /**
+     * Receive replication requests from leader (follower endpoint)
+     * Endpoint: POST /api/v1/storage/replicate
+     */
+    @PostMapping("/replicate")
+    public ResponseEntity<ReplicationResponse> replicateMessages(
+            @Validated @RequestBody ReplicationRequest request) {
+
+        log.info("Received replication request from leader {} for topic: {}, partition: {}, messageCount: {}",
+                request.getLeaderId(), request.getTopic(), request.getPartition(),
+                request.getMessages() != null ? request.getMessages().size() : 0);
+
+        try {
+            ReplicationResponse response = replicationManager.processReplicationRequest(request, storageService);
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            log.error("Error processing replication request", e);
+
+            return ResponseEntity.ok(ReplicationResponse.builder()
+                    .topic(request.getTopic())
+                    .partition(request.getPartition())
+                    .followerId(config.getBroker().getId()) // Get from config
+                    .success(false)
+                    .errorCode(ReplicationResponse.ErrorCode.STORAGE_ERROR)
+                    .errorMessage("Internal server error: " + e.getMessage())
+                    .build());
+        }
+    }
+
+    /**
+     * Update metadata from metadata service (push model)
+     * Endpoint: POST /api/v1/storage/metadata
+     */
+    @PostMapping("/metadata")
+    public ResponseEntity<MetadataUpdateResponse> updateMetadata(
+            @Validated @RequestBody MetadataUpdateRequest request) {
+
+        log.info("Received metadata update from metadata service with {} brokers and {} partitions",
+                request.getBrokers() != null ? request.getBrokers().size() : 0,
+                request.getPartitions() != null ? request.getPartitions().size() : 0);
+
+        try {
+            // Update metadata in MetadataStore
+            metadataStore.updateMetadata(request);
+
+            return ResponseEntity.ok(MetadataUpdateResponse.builder()
+                    .success(true)
+                    .errorCode(MetadataUpdateResponse.ErrorCode.NONE)
+                    .processedTimestamp(System.currentTimeMillis())
+                    .brokerId(config.getBroker().getId())
+                    .build());
+
+        } catch (Exception e) {
+            log.error("Error processing metadata update", e);
+
+            return ResponseEntity.ok(MetadataUpdateResponse.builder()
+                    .success(false)
+                    .errorCode(MetadataUpdateResponse.ErrorCode.PROCESSING_ERROR)
+                    .errorMessage("Failed to update metadata: " + e.getMessage())
+                    .processedTimestamp(System.currentTimeMillis())
+                    .brokerId(config.getBroker().getId())
+                    .build());
+        }
+    }
+
+    // TODO: Add endpoint to request metadata from metadata service (pull model)
+    // This will be implemented when metadata service is available
+    // GET /api/v1/storage/metadata/refresh - Request latest metadata from metadata service
+
     // TODO: Add partition management endpoints
     // 1. POST /api/v1/storage/partitions - Create new partition
     // 2. DELETE /api/v1/storage/partitions/{topic}/{partition} - Delete partition

@@ -18,6 +18,9 @@ import java.util.List;
 /**
  * REST Controller for Metadata operations
  * Entry point with request validation
+ *
+ * When metadata is pushed to storage nodes then storage node should be consistent with 
+ * existing operations ( handle it properly different possibilities like, stop all operations update metadata and then start operations again with new data, or let current operations finish and then update metadata for new operations )
  * 
  * Routes requests to controller leader in KRaft mode
  * 
