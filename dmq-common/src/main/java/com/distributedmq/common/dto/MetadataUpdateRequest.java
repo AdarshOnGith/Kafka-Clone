@@ -18,6 +18,9 @@ import java.util.Map;
 @AllArgsConstructor
 public class MetadataUpdateRequest {
 
+    // Metadata version for ordering and conflict resolution
+    private Long version;
+
     // Broker information updates
     private List<BrokerInfo> brokers;
 

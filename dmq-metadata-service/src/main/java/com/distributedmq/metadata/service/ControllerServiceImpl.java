@@ -28,6 +28,8 @@ public class ControllerServiceImpl implements ControllerService {
     // Heartbeat tracking
     private final ConcurrentMap<Integer, Long> lastHeartbeat = new ConcurrentHashMap<>();
 
+    private final MetadataPushService metadataPushService;
+
     @PostConstruct
     public void initializeDefaultBrokers() {
         // Add default brokers for development
@@ -122,6 +124,15 @@ public class ControllerServiceImpl implements ControllerService {
         // TODO: Re-elect leaders for partitions where this broker was leader
         // TODO: Update ISR lists
         // TODO: Trigger replication for under-replicated partitions
+
+        // Push broker status change to storage nodes
+        try {
+            metadataPushService.pushFullClusterMetadata();
+            log.info("Successfully pushed broker failure update for broker {}", brokerId);
+        } catch (Exception e) {
+            log.error("Failed to push broker failure update for broker {}: {}", brokerId, e.getMessage());
+            // Don't fail failure handling if push fails
+        }
     }
 
     @Override
@@ -133,7 +144,25 @@ public class ControllerServiceImpl implements ControllerService {
         
         List<BrokerNode> activeBrokers = getActiveBrokers();
         if (!activeBrokers.isEmpty()) {
-            return activeBrokers.get(0);
+            BrokerNode newLeader = activeBrokers.get(0);
+            
+            // Push partition leadership change to storage nodes
+            try {
+                // Note: In a real implementation, we'd need to get the current leader first
+                // For now, we'll assume leadership change and push with new leader
+                // The followers and ISR would need to be determined from current partition metadata
+                metadataPushService.pushPartitionLeadershipUpdate(
+                    topicName, partition, newLeader.getBrokerId(), 
+                    List.of(), List.of(newLeader.getBrokerId())); // Simplified for now
+                log.info("Successfully pushed leadership change for partition {}-{} to broker {}", 
+                    topicName, partition, newLeader.getBrokerId());
+            } catch (Exception e) {
+                log.error("Failed to push leadership change for partition {}-{}: {}", 
+                    topicName, partition, e.getMessage());
+                // Don't fail election if push fails
+            }
+            
+            return newLeader;
         }
         
         throw new IllegalStateException("No active brokers available for leader election");
@@ -154,6 +183,15 @@ public class ControllerServiceImpl implements ControllerService {
         lastHeartbeat.put(broker.getBrokerId(), System.currentTimeMillis());
         
         log.info("Successfully registered broker: {}", broker.getBrokerId());
+
+        // Push broker status change to storage nodes
+        try {
+            metadataPushService.pushFullClusterMetadata();
+            log.info("Successfully pushed broker registration update for broker {}", broker.getBrokerId());
+        } catch (Exception e) {
+            log.error("Failed to push broker registration update for broker {}: {}", broker.getBrokerId(), e.getMessage());
+            // Don't fail registration if push fails
+        }
     }
 
     @Override
@@ -167,5 +205,31 @@ public class ControllerServiceImpl implements ControllerService {
         handleBrokerFailure(brokerId);
         
         log.info("Successfully unregistered broker: {}", brokerId);
+
+        // Push broker status change to storage nodes
+        try {
+            metadataPushService.pushFullClusterMetadata();
+            log.info("Successfully pushed broker unregistration update for broker {}", brokerId);
+        } catch (Exception e) {
+            log.error("Failed to push broker unregistration update for broker {}: {}", brokerId, e.getMessage());
+            // Don't fail unregistration if push fails
+        }
+    }
+
+    @Override
+    public void updatePartitionLeadership(String topicName, int partitionId, Integer leaderId, List<Integer> followers, List<Integer> isr) {
+        log.info("Updating partition leadership for {}-{}: leader={}, followers={}, isr={}",
+                topicName, partitionId, leaderId, followers, isr);
+
+        // This is a notification that partition leadership has changed
+        // In a real implementation, this would update the controller's view of partition leadership
+        // For now, we just log it and could trigger rebalancing if needed
+
+        // TODO: Update internal partition leadership tracking
+        // TODO: Validate the leadership change
+        // TODO: Trigger ISR updates if needed
+        // TODO: Notify other components about the change
+
+        log.info("Partition leadership update processed for {}-{}", topicName, partitionId);
     }
 }

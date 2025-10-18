@@ -1,0 +1,57 @@
+{
+  "services": {
+    "metadata-services": [
+      {
+        "id": 1,
+        "host": "localhost",
+        "port": 9091,
+        "url": "http://localhost:9091"
+      },
+      {
+        "id": 2,
+        "host": "localhost",
+        "port": 9092,
+        "url": "http://localhost:9092"
+      },
+      {
+        "id": 3,
+        "host": "localhost",
+        "port": 9093,
+        "url": "http://localhost:9093"
+      }
+    ],
+    "storage-services": [
+      {
+        "id": 101,
+        "host": "localhost",
+        "port": 8081,
+        "url": "http://localhost:8081",
+        "pairedMetadataServiceId": 1
+      },
+      {
+        "id": 102,
+        "host": "localhost",
+        "port": 8082,
+        "url": "http://localhost:8082",
+        "pairedMetadataServiceId": 2
+      },
+      {
+        "id": 103,
+        "host": "localhost",
+        "port": 8083,
+        "url": "http://localhost:8083",
+        "pairedMetadataServiceId": 3
+      }
+    ]
+  },
+  "controller": {
+    "electionTimeoutMs": 5000,
+    "heartbeatIntervalMs": 1000
+  },
+  "metadata": {
+    "sync": {
+      "heartbeatIntervalMs": 5000,
+      "syncTimeoutMs": 30000
+    }
+  }
+}

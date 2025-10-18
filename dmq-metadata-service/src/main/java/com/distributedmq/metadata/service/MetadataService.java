@@ -1,5 +1,9 @@
 package com.distributedmq.metadata.service;
 
+import com.distributedmq.common.dto.HeartbeatRequest;
+import com.distributedmq.common.dto.HeartbeatResponse;
+import com.distributedmq.common.dto.MetadataUpdateRequest;
+import com.distributedmq.common.dto.MetadataUpdateResponse;
 import com.distributedmq.common.model.TopicMetadata;
 import com.distributedmq.metadata.dto.CreateTopicRequest;
 
@@ -34,6 +38,35 @@ public interface MetadataService {
      * Update topic metadata
      */
     void updateTopicMetadata(TopicMetadata metadata);
+
+    /**
+     * Push all metadata to a requesting metadata service
+     * Used for synchronization when a metadata service is out of sync
+     */
+    void pushAllMetadataToService(String serviceUrl);
+
+    /**
+     * Receive metadata pushed from active controller
+     * Used by non-active metadata services to receive synced data
+     */
+    void receiveMetadataFromController(com.distributedmq.common.dto.MetadataUpdateRequest metadataUpdate);
+
+    /**
+     * Send heartbeat to controller with current sync status
+     * Returns heartbeat response indicating if service is in sync
+     */
+    com.distributedmq.common.dto.HeartbeatResponse sendHeartbeat();
+
+    /**
+     * Get the timestamp of the last metadata update received by this service
+     */
+    Long getLastMetadataUpdateTimestamp();
+
+    /**
+     * Process metadata updates received from storage services
+     * Storage services notify metadata services about local changes
+     */
+    MetadataUpdateResponse processStorageUpdate(MetadataUpdateRequest storageUpdate);
 
     // TODO: Add partition management methods
     // TODO: Add consumer group methods

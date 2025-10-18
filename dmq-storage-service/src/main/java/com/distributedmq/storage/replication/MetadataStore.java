@@ -1,11 +1,19 @@
 package com.distributedmq.storage.replication;
 
 import com.distributedmq.common.dto.MetadataUpdateRequest;
+import com.distributedmq.common.dto.StorageHeartbeatRequest;
+import com.distributedmq.common.dto.StorageHeartbeatResponse;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+
+import org.springframework.web.client.RestTemplate;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 
 /**
  * consider this class as updated information, as it will be keep updated by metadata service if any changes occur
@@ -35,9 +43,26 @@ public class MetadataStore {
     // This broker's ID (injected from config)
     private Integer localBrokerId;
 
+    // Metadata service URL for notifications
+    private String metadataServiceUrl;
+
+    // RestTemplate for HTTP calls
+    private final RestTemplate restTemplate = new RestTemplate();
+
+    // Current metadata version known by this storage service
+    private volatile Long currentMetadataVersion = 0L;
+
+    // Last metadata update timestamp
+    private volatile Long lastMetadataUpdateTimestamp = 0L;
+
     public void setLocalBrokerId(Integer brokerId) {
         this.localBrokerId = brokerId;
         log.info("Local broker ID set to: {}", brokerId);
+    }
+
+    public void setMetadataServiceUrl(String url) {
+        this.metadataServiceUrl = url;
+        log.info("Metadata service URL set to: {}", url);
     }
 
     /**
@@ -45,9 +70,17 @@ public class MetadataStore {
      * This replaces the current metadata with the new snapshot
      */
     public void updateMetadata(MetadataUpdateRequest request) {
-        log.info("Updating metadata: {} brokers, {} partitions",
+        log.info("Updating metadata: version={}, {} brokers, {} partitions",
+                request.getVersion(),
                 request.getBrokers() != null ? request.getBrokers().size() : 0,
                 request.getPartitions() != null ? request.getPartitions().size() : 0);
+
+        // Update metadata version and timestamp
+        if (request.getVersion() != null) {
+            this.currentMetadataVersion = request.getVersion();
+        }
+        this.lastMetadataUpdateTimestamp = request.getTimestamp() != null ?
+                request.getTimestamp() : System.currentTimeMillis();
 
         // Update broker information
         if (request.getBrokers() != null) {
@@ -192,8 +225,179 @@ public class MetadataStore {
         return brokers.get(brokerId);
     }
 
+    /**
+     * Generate partition key from topic and partition
+     */
     private String getPartitionKey(String topic, Integer partition) {
         return topic + "-" + partition;
+    }
+
+    /**
+     * Notify metadata service about partition leadership change
+     * Called when this broker detects a leadership change
+     */
+    public void notifyPartitionLeadershipChange(String topic, Integer partition,
+                                              Integer newLeaderId, List<Integer> followers,
+                                              List<Integer> isr, Long leaderEpoch) {
+        if (metadataServiceUrl == null) {
+            log.warn("Metadata service URL not configured, cannot notify about leadership change");
+            return;
+        }
+
+        try {
+            // Create metadata update request
+            MetadataUpdateRequest.PartitionMetadata partitionMetadata =
+                    new MetadataUpdateRequest.PartitionMetadata();
+            partitionMetadata.setTopic(topic);
+            partitionMetadata.setPartition(partition);
+            partitionMetadata.setLeaderId(newLeaderId);
+            partitionMetadata.setFollowerIds(followers);
+            partitionMetadata.setIsrIds(isr);
+            partitionMetadata.setLeaderEpoch(leaderEpoch);
+
+            MetadataUpdateRequest updateRequest = MetadataUpdateRequest.builder()
+                    .partitions(List.of(partitionMetadata))
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+
+            // Send notification to metadata service
+            notifyMetadataService(updateRequest);
+
+            log.info("Notified metadata service about partition leadership change for {}-{}",
+                    topic, partition);
+
+        } catch (Exception e) {
+            log.error("Failed to notify metadata service about partition leadership change: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Notify metadata service about broker status change
+     * Called when this broker detects another broker going offline/online
+     */
+    public void notifyBrokerStatusChange(Integer brokerId, boolean isAlive) {
+        if (metadataServiceUrl == null) {
+            log.warn("Metadata service URL not configured, cannot notify about broker status change");
+            return;
+        }
+
+        try {
+            // Create broker info
+            MetadataUpdateRequest.BrokerInfo brokerInfo =
+                    new MetadataUpdateRequest.BrokerInfo();
+            brokerInfo.setId(brokerId);
+            brokerInfo.setAlive(isAlive);
+            brokerInfo.setLastHeartbeat(System.currentTimeMillis());
+
+            MetadataUpdateRequest updateRequest = MetadataUpdateRequest.builder()
+                    .brokers(List.of(brokerInfo))
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+
+            // Send notification to metadata service
+            notifyMetadataService(updateRequest);
+
+            log.info("Notified metadata service about broker {} status change: {}",
+                    brokerId, isAlive ? "online" : "offline");
+
+        } catch (Exception e) {
+            log.error("Failed to notify metadata service about broker status change: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Send notification to metadata service
+     */
+    private void notifyMetadataService(MetadataUpdateRequest updateRequest) {
+        try {
+            String url = metadataServiceUrl + "/storage-updates";
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+
+            HttpEntity<MetadataUpdateRequest> requestEntity = new HttpEntity<>(updateRequest, headers);
+
+            ResponseEntity<String> response = restTemplate.postForEntity(url, requestEntity, String.class);
+
+            if (response.getStatusCode().is2xxSuccessful()) {
+                log.info("Successfully notified metadata service about update");
+            } else {
+                log.warn("Metadata service returned non-success status: {}", response.getStatusCode());
+            }
+
+        } catch (Exception e) {
+            log.error("Failed to notify metadata service: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Send heartbeat to controller with current sync status
+     */
+    public void sendHeartbeatToController() {
+        try {
+            // Get controller URL (assuming first metadata service is the controller for now)
+            String controllerUrl = com.distributedmq.common.config.ServiceDiscovery.getMetadataServiceUrl(0);
+            if (controllerUrl == null) {
+                log.warn("No controller URL found, cannot send heartbeat");
+                return;
+            }
+
+            // Count partitions this broker is leading and following
+            int partitionsLeading = 0;
+            int partitionsFollowing = 0;
+
+            for (String key : partitionLeaders.keySet()) {
+                Integer leaderId = partitionLeaders.get(key);
+                if (leaderId != null && leaderId.equals(localBrokerId)) {
+                    partitionsLeading++;
+                }
+            }
+
+            for (String key : partitionFollowers.keySet()) {
+                List<Integer> followers = partitionFollowers.get(key);
+                if (followers != null && followers.contains(localBrokerId)) {
+                    partitionsFollowing++;
+                }
+            }
+
+            // Create heartbeat request
+            StorageHeartbeatRequest heartbeat = StorageHeartbeatRequest.builder()
+                    .storageServiceId(localBrokerId)
+                    .currentMetadataVersion(currentMetadataVersion)
+                    .lastMetadataUpdateTimestamp(lastMetadataUpdateTimestamp)
+                    .heartbeatTimestamp(System.currentTimeMillis())
+                    .alive(true)
+                    .partitionsLeading(partitionsLeading)
+                    .partitionsFollowing(partitionsFollowing)
+                    .build();
+
+            // Send heartbeat to controller
+            String endpoint = controllerUrl + "/api/v1/metadata/storage-heartbeat";
+            StorageHeartbeatResponse response = restTemplate.postForObject(endpoint, heartbeat, StorageHeartbeatResponse.class);
+
+            if (response != null && response.isSuccess()) {
+                log.debug("Successfully sent heartbeat to controller");
+            } else {
+                log.warn("Heartbeat to controller failed: {}", response != null ? response.getErrorMessage() : "null response");
+            }
+
+        } catch (Exception e) {
+            log.error("Failed to send heartbeat to controller: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Get current metadata version
+     */
+    public Long getCurrentMetadataVersion() {
+        return currentMetadataVersion;
+    }
+
+    /**
+     * Get last metadata update timestamp
+     */
+    public Long getLastMetadataUpdateTimestamp() {
+        return lastMetadataUpdateTimestamp;
     }
 
     // TODO: Add methods to sync with metadata service (pull model - request metadata)

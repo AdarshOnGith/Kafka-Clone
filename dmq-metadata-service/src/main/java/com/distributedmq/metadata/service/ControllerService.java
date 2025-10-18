@@ -46,6 +46,11 @@ public interface ControllerService {
      */
     void unregisterBroker(Integer brokerId);
 
+    /**
+     * Update partition leadership information
+     */
+    void updatePartitionLeadership(String topicName, int partitionId, Integer leaderId, List<Integer> followers, List<Integer> isr);
+
     // TODO: Add ISR management
     // TODO: Add rebalancing logic
 }
