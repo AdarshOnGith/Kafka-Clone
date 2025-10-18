@@ -6,6 +6,8 @@ import com.distributedmq.common.dto.MetadataUpdateRequest;
 import com.distributedmq.common.dto.MetadataUpdateResponse;
 import com.distributedmq.common.model.TopicMetadata;
 import com.distributedmq.metadata.dto.CreateTopicRequest;
+import com.distributedmq.metadata.dto.RegisterBrokerRequest;
+import com.distributedmq.metadata.dto.BrokerResponse;
 
 import java.util.List;
 
@@ -33,6 +35,26 @@ public interface MetadataService {
      * Delete a topic
      */
     void deleteTopic(String topicName);
+
+    /**
+     * Register a broker
+     */
+    BrokerResponse registerBroker(RegisterBrokerRequest request);
+
+    /**
+     * Get broker information
+     */
+    BrokerResponse getBroker(Integer brokerId);
+
+    /**
+     * List all brokers
+     */
+    List<BrokerResponse> listBrokers();
+
+    /**
+     * Update broker status
+     */
+    void updateBrokerStatus(Integer brokerId, String status);
 
     /**
      * Update topic metadata

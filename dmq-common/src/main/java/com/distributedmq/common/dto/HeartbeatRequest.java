@@ -2,6 +2,8 @@ package com.distributedmq.common.dto;
 
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
 
 /**
  * Heartbeat request sent by metadata services to controller
@@ -9,6 +11,8 @@ import lombok.Data;
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class HeartbeatRequest {
     /**
      * ID of the metadata service sending the heartbeat

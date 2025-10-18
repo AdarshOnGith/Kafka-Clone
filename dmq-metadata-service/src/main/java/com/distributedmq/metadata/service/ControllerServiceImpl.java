@@ -127,7 +127,7 @@ public class ControllerServiceImpl implements ControllerService {
 
         // Push broker status change to storage nodes
         try {
-            metadataPushService.pushFullClusterMetadata();
+            metadataPushService.pushFullClusterMetadata(getActiveBrokers());
             log.info("Successfully pushed broker failure update for broker {}", brokerId);
         } catch (Exception e) {
             log.error("Failed to push broker failure update for broker {}: {}", brokerId, e.getMessage());
@@ -186,7 +186,7 @@ public class ControllerServiceImpl implements ControllerService {
 
         // Push broker status change to storage nodes
         try {
-            metadataPushService.pushFullClusterMetadata();
+            metadataPushService.pushFullClusterMetadata(getActiveBrokers());
             log.info("Successfully pushed broker registration update for broker {}", broker.getBrokerId());
         } catch (Exception e) {
             log.error("Failed to push broker registration update for broker {}: {}", broker.getBrokerId(), e.getMessage());
@@ -208,7 +208,7 @@ public class ControllerServiceImpl implements ControllerService {
 
         // Push broker status change to storage nodes
         try {
-            metadataPushService.pushFullClusterMetadata();
+            metadataPushService.pushFullClusterMetadata(getActiveBrokers());
             log.info("Successfully pushed broker unregistration update for broker {}", brokerId);
         } catch (Exception e) {
             log.error("Failed to push broker unregistration update for broker {}: {}", brokerId, e.getMessage());

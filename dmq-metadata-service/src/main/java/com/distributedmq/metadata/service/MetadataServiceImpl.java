@@ -9,8 +9,12 @@ import com.distributedmq.common.model.TopicMetadata;
 import com.distributedmq.common.model.BrokerNode;
 import com.distributedmq.common.model.BrokerStatus;
 import com.distributedmq.metadata.dto.CreateTopicRequest;
+import com.distributedmq.metadata.dto.RegisterBrokerRequest;
+import com.distributedmq.metadata.dto.BrokerResponse;
 import com.distributedmq.metadata.entity.TopicEntity;
+import com.distributedmq.metadata.entity.BrokerEntity;
 import com.distributedmq.metadata.repository.TopicRepository;
+import com.distributedmq.metadata.repository.BrokerRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -21,6 +25,7 @@ import org.springframework.web.client.RestTemplate;
 import javax.annotation.PostConstruct;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
@@ -35,6 +40,7 @@ import java.util.stream.Collectors;
 public class MetadataServiceImpl implements MetadataService {
 
     private final TopicRepository topicRepository;
+    private final BrokerRepository brokerRepository;
     private final ControllerService controllerService;
     private final MetadataPushService metadataPushService;
     private final com.distributedmq.metadata.coordination.RaftController raftController;
@@ -71,7 +77,8 @@ public class MetadataServiceImpl implements MetadataService {
         // Check if topic already exists
         Optional<TopicEntity> existingTopic = topicRepository.findByTopicName(request.getTopicName());
         if (existingTopic.isPresent()) {
-            throw new IllegalArgumentException("Topic already exists: " + request.getTopicName());
+            log.info("Topic {} already exists, returning existing topic", request.getTopicName());
+            return existingTopic.get().toMetadata();
         }
 
         // Create topic configuration with defaults
@@ -109,7 +116,9 @@ public class MetadataServiceImpl implements MetadataService {
         // This will be implemented when storage service metadata sync is added
 
         // Push metadata to all nodes
-        metadataPushService.pushTopicMetadata(savedEntity.toMetadata());
+        List<MetadataUpdateResponse> pushResponses = metadataPushService.pushTopicMetadata(metadata, controllerService.getActiveBrokers());
+        long successCount = pushResponses.stream().filter(MetadataUpdateResponse::isSuccess).count();
+        log.info("Topic metadata push completed: {}/{} storage nodes successful", successCount, pushResponses.size());
 
         return savedEntity.toMetadata();
     }
@@ -201,8 +210,9 @@ public class MetadataServiceImpl implements MetadataService {
 
         // Push cluster metadata update (without the deleted topic) to storage nodes
         try {
-            metadataPushService.pushFullClusterMetadata();
-            log.info("Successfully pushed cluster metadata update after deleting topic {}", topicName);
+            List<MetadataUpdateResponse> pushResponses = metadataPushService.pushFullClusterMetadata(controllerService.getActiveBrokers());
+            long successCount = pushResponses.stream().filter(MetadataUpdateResponse::isSuccess).count();
+            log.info("Cluster metadata push after topic deletion completed: {}/{} storage nodes successful", successCount, pushResponses.size());
         } catch (Exception e) {
             log.error("Failed to push cluster metadata update after deleting topic {}: {}", topicName, e.getMessage());
             // Don't fail the deletion if push fails
@@ -234,12 +244,164 @@ public class MetadataServiceImpl implements MetadataService {
 
         // Push updated metadata to storage nodes
         try {
-            metadataPushService.pushTopicMetadata(metadata);
-            log.info("Successfully pushed topic metadata update for {}", metadata.getTopicName());
+            List<MetadataUpdateResponse> pushResponses = metadataPushService.pushTopicMetadata(metadata, controllerService.getActiveBrokers());
+            long successCount = pushResponses.stream().filter(MetadataUpdateResponse::isSuccess).count();
+            log.info("Topic metadata update push completed: {}/{} storage nodes successful", successCount, pushResponses.size());
         } catch (Exception e) {
             log.error("Failed to push topic metadata update for {}: {}", metadata.getTopicName(), e.getMessage());
             // Don't fail the update if push fails
         }
+    }
+
+    @Override
+    @Transactional
+    public BrokerResponse registerBroker(RegisterBrokerRequest request) {
+        log.info("Registering broker: {}", request.getId());
+
+        // Only active controller can register brokers
+        if (!raftController.isControllerLeader()) {
+            throw new IllegalStateException("Only active controller can register brokers. Current leader: " +
+                    raftController.getControllerLeaderId());
+        }
+
+        // Check if broker already exists
+        Optional<BrokerEntity> existingBroker = brokerRepository.findById(request.getId());
+        if (existingBroker.isPresent()) {
+            BrokerEntity broker = existingBroker.get();
+            // If broker exists with same details, return existing broker (idempotent operation)
+            if (broker.getHost().equals(request.getHost()) &&
+                broker.getPort().equals(request.getPort()) &&
+                Objects.equals(broker.getRack(), request.getRack())) {
+                log.info("Broker {} already exists with same details, returning existing broker", request.getId());
+                return BrokerResponse.builder()
+                        .id(broker.getId())
+                        .host(broker.getHost())
+                        .port(broker.getPort())
+                        .rack(broker.getRack())
+                        .status(broker.getStatus())
+                        .address(broker.getAddress())
+                        .registeredAt(broker.getRegisteredAt().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
+                        .lastHeartbeat(broker.getLastHeartbeat() != null ?
+                            broker.getLastHeartbeat().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli() : null)
+                        .build();
+            } else {
+                // Broker exists but with different details - this is a conflict
+                throw new IllegalArgumentException("Broker already exists with different details: " + request.getId());
+            }
+        }
+
+        // Create broker entity
+        BrokerEntity entity = BrokerEntity.builder()
+                .id(request.getId())
+                .host(request.getHost())
+                .port(request.getPort())
+                .rack(request.getRack())
+                .status("ONLINE")
+                .build();
+
+        BrokerEntity savedEntity = brokerRepository.save(entity);
+
+        // Register with controller service
+        controllerService.registerBroker(BrokerNode.builder()
+                .brokerId(savedEntity.getId())
+                .host(savedEntity.getHost())
+                .port(savedEntity.getPort())
+                .status(BrokerStatus.ONLINE)
+                .build());
+
+        log.info("Successfully registered broker: {}", savedEntity.getId());
+
+        return BrokerResponse.builder()
+                .id(savedEntity.getId())
+                .host(savedEntity.getHost())
+                .port(savedEntity.getPort())
+                .rack(savedEntity.getRack())
+                .status(savedEntity.getStatus())
+                .address(savedEntity.getAddress())
+                .registeredAt(savedEntity.getRegisteredAt().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
+                .lastHeartbeat(savedEntity.getLastHeartbeat() != null ?
+                    savedEntity.getLastHeartbeat().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli() : null)
+                .build();
+    }
+
+    @Override
+    public BrokerResponse getBroker(Integer brokerId) {
+        log.debug("Getting broker: {}", brokerId);
+
+        Optional<BrokerEntity> entity = brokerRepository.findById(brokerId);
+        if (entity.isEmpty()) {
+            throw new IllegalArgumentException("Broker not found: " + brokerId);
+        }
+
+        BrokerEntity broker = entity.get();
+        return BrokerResponse.builder()
+                .id(broker.getId())
+                .host(broker.getHost())
+                .port(broker.getPort())
+                .rack(broker.getRack())
+                .status(broker.getStatus())
+                .address(broker.getAddress())
+                .registeredAt(broker.getRegisteredAt().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
+                .lastHeartbeat(broker.getLastHeartbeat() != null ?
+                    broker.getLastHeartbeat().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli() : null)
+                .build();
+    }
+
+    @Override
+    public List<BrokerResponse> listBrokers() {
+        log.debug("Listing all brokers");
+
+        List<BrokerEntity> entities = brokerRepository.findAll();
+        return entities.stream()
+                .map(entity -> {
+                    BrokerResponse response = BrokerResponse.builder()
+                            .id(entity.getId())
+                            .host(entity.getHost())
+                            .port(entity.getPort())
+                            .rack(entity.getRack())
+                            .status(entity.getStatus())
+                            .address(entity.getAddress())
+                            .registeredAt(entity.getRegisteredAt().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
+                            .lastHeartbeat(entity.getLastHeartbeat() != null ?
+                                entity.getLastHeartbeat().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli() : null)
+                            .build();
+                    return response;
+                })
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    @Transactional
+    public void updateBrokerStatus(Integer brokerId, String status) {
+        log.info("Updating broker {} status to: {}", brokerId, status);
+
+        Optional<BrokerEntity> entityOpt = brokerRepository.findById(brokerId);
+        if (entityOpt.isEmpty()) {
+            throw new IllegalArgumentException("Broker not found: " + brokerId);
+        }
+
+        BrokerEntity entity = entityOpt.get();
+        entity.setStatus(status);
+
+        if ("ONLINE".equals(status)) {
+            entity.setLastHeartbeat(java.time.LocalDateTime.now());
+        }
+
+        brokerRepository.save(entity);
+
+        // Update controller service
+        if ("ONLINE".equals(status)) {
+            controllerService.registerBroker(BrokerNode.builder()
+                    .brokerId(brokerId)
+                    .host(entity.getHost())
+                    .port(entity.getPort())
+                    .status(BrokerStatus.ONLINE)
+                    .build());
+        } else {
+            controllerService.unregisterBroker(brokerId);
+        }
+
+        log.info("Successfully updated broker {} status to: {}", brokerId, status);
     }
 
     @Override
@@ -321,6 +483,16 @@ public class MetadataServiceImpl implements MetadataService {
     @Override
     public HeartbeatResponse sendHeartbeat() {
         log.debug("Sending heartbeat to controller");
+
+        // If this service is the controller, no need to send heartbeat to itself
+        if (raftController.isControllerLeader()) {
+            log.debug("This service is the controller, skipping heartbeat send");
+            return HeartbeatResponse.builder()
+                    .success(true)
+                    .inSync(true)
+                    .responseTimestamp(System.currentTimeMillis())
+                    .build();
+        }
 
         try {
             // Get controller URL (placeholder - should use service discovery)
@@ -495,7 +667,7 @@ public class MetadataServiceImpl implements MetadataService {
         try {
             String url = controllerUrl + "/api/v1/metadata/sync";
             // Include this service's URL as a parameter so controller knows where to push
-            String thisServiceUrl = "http://localhost:8080"; // TODO: Get actual service URL
+            String thisServiceUrl = "http://localhost:" + System.getProperty("server.port", "9091"); // Use current service URL
             url += "?requestingServiceUrl=" + thisServiceUrl;
 
             log.info("Requesting metadata sync from controller: {}", url);
@@ -543,9 +715,9 @@ public class MetadataServiceImpl implements MetadataService {
      * TODO: Implement proper service discovery
      */
     private String getPeerMetadataServiceUrl() {
-        // Placeholder: try a few known peers
+        // Placeholder: try known metadata service peers on ports 9091, 9092, 9093
         // In real implementation, this would use service discovery
-        String[] peerUrls = {"http://localhost:8081", "http://localhost:8082", "http://localhost:8083"};
+        String[] peerUrls = {"http://localhost:9091", "http://localhost:9092", "http://localhost:9093"};
 
         for (String url : peerUrls) {
             try {
@@ -628,8 +800,8 @@ public class MetadataServiceImpl implements MetadataService {
      * Get URL for a metadata service (placeholder implementation)
      */
     private String getMetadataServiceUrl(Integer serviceId) {
-        // Placeholder: assume services run on localhost with ports 8080, 8081, 8082
-        int basePort = 8080;
+        // Metadata services run on ports 9091, 9092, 9093 for service IDs 1, 2, 3
+        int basePort = 9090; // 9090 + serviceId = correct port
         return "http://localhost:" + (basePort + serviceId);
     }
 
@@ -637,8 +809,8 @@ public class MetadataServiceImpl implements MetadataService {
      * Get controller URL from controller ID
      */
     private String getControllerUrl(Integer controllerId) {
-        // Placeholder: assume controllers run on localhost with ports 8080, 8081, 8082
-        int basePort = 8080;
+        // Metadata services run on ports 9091, 9092, 9093 for service IDs 1, 2, 3
+        int basePort = 9090; // 9090 + controllerId = correct port
         return "http://localhost:" + (basePort + controllerId);
     }
 
@@ -647,9 +819,15 @@ public class MetadataServiceImpl implements MetadataService {
      * TODO: Implement proper service ID discovery
      */
     private Integer getCurrentServiceId() {
-        // Placeholder: assume service ID based on port or configuration
-        // In real implementation, this would be injected from configuration
-        return 0; // Default service ID
+        // Determine service ID based on server port
+        // Metadata services: 9091=ID1, 9092=ID2, 9093=ID3
+        String port = System.getProperty("server.port", "9091");
+        switch (port) {
+            case "9091": return 1;
+            case "9092": return 2;
+            case "9093": return 3;
+            default: return 1; // Default to controller
+        }
     }
 
     /**

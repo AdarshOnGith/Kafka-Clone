@@ -1,0 +1,959 @@
+KAFKA-CLONE TEST RESPONSES
+Generated: 2025-10-18T23:35:00.405656
+================================================================================
+
+This file contains all HTTP request/response details from the test run.
+Tests cover replication behavior for acks=0, acks=1, and acks=-1.
+
+================================================================================
+
+================================================================================
+TEST: Metadata Population - Broker 8081
+Timestamp: 2025-10-18T23:34:33.709425
+================================================================================
+
+REQUEST:
+----------------------------------------
+method: POST
+url: http://localhost:8081/api/v1/storage/metadata
+body:
+{
+  "brokers": [
+    {
+      "id": 1,
+      "host": "localhost",
+      "port": 8081,
+      "isAlive": true,
+      "lastHeartbeat": 1703123456789
+    },
+    {
+      "id": 2,
+      "host": "localhost",
+      "port": 8082,
+      "isAlive": true,
+      "lastHeartbeat": 1703123456789
+    },
+    {
+      "id": 3,
+      "host": "localhost",
+      "port": 8083,
+      "isAlive": true,
+      "lastHeartbeat": 1703123456789
+    }
+  ],
+  "partitions": [
+    {
+      "topic": "test-topic",
+      "partition": 0,
+      "leaderId": 1,
+      "followerIds": [
+        2,
+        3
+      ],
+      "isrIds": [
+        1,
+        2,
+        3
+      ],
+      "leaderEpoch": 1
+    },
+    {
+      "topic": "orders",
+      "partition": 0,
+      "leaderId": 2,
+      "followerIds": [
+        1,
+        3
+      ],
+      "isrIds": [
+        2,
+        1
+      ],
+      "leaderEpoch": 1
+    },
+    {
+      "topic": "orders",
+      "partition": 1,
+      "leaderId": 3,
+      "followerIds": [
+        1,
+        2
+      ],
+      "isrIds": [
+        3,
+        2
+      ],
+      "leaderEpoch": 1
+    }
+  ],
+  "timestamp": 1703123456789
+}
+
+RESPONSE:
+----------------------------------------
+status_code: 200
+headers:
+{
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Date": "Sat, 18 Oct 2025 18:04:33 GMT",
+  "Keep-Alive": "timeout=60",
+  "Connection": "keep-alive"
+}
+body:
+{
+  "success": true,
+  "errorCode": "NONE",
+  "errorMessage": null,
+  "processedTimestamp": 1760810673696,
+  "brokerId": 1
+}
+
+================================================================================
+
+================================================================================
+TEST: Metadata Population - Broker 8082
+Timestamp: 2025-10-18T23:34:34.295221
+================================================================================
+
+REQUEST:
+----------------------------------------
+method: POST
+url: http://localhost:8082/api/v1/storage/metadata
+body:
+{
+  "brokers": [
+    {
+      "id": 1,
+      "host": "localhost",
+      "port": 8081,
+      "isAlive": true,
+      "lastHeartbeat": 1703123456789
+    },
+    {
+      "id": 2,
+      "host": "localhost",
+      "port": 8082,
+      "isAlive": true,
+      "lastHeartbeat": 1703123456789
+    },
+    {
+      "id": 3,
+      "host": "localhost",
+      "port": 8083,
+      "isAlive": true,
+      "lastHeartbeat": 1703123456789
+    }
+  ],
+  "partitions": [
+    {
+      "topic": "test-topic",
+      "partition": 0,
+      "leaderId": 1,
+      "followerIds": [
+        2,
+        3
+      ],
+      "isrIds": [
+        1,
+        2,
+        3
+      ],
+      "leaderEpoch": 1
+    },
+    {
+      "topic": "orders",
+      "partition": 0,
+      "leaderId": 2,
+      "followerIds": [
+        1,
+        3
+      ],
+      "isrIds": [
+        2,
+        1
+      ],
+      "leaderEpoch": 1
+    },
+    {
+      "topic": "orders",
+      "partition": 1,
+      "leaderId": 3,
+      "followerIds": [
+        1,
+        2
+      ],
+      "isrIds": [
+        3,
+        2
+      ],
+      "leaderEpoch": 1
+    }
+  ],
+  "timestamp": 1703123456789
+}
+
+RESPONSE:
+----------------------------------------
+status_code: 200
+headers:
+{
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Date": "Sat, 18 Oct 2025 18:04:34 GMT",
+  "Keep-Alive": "timeout=60",
+  "Connection": "keep-alive"
+}
+body:
+{
+  "success": true,
+  "errorCode": "NONE",
+  "errorMessage": null,
+  "processedTimestamp": 1760810674290,
+  "brokerId": 2
+}
+
+================================================================================
+
+================================================================================
+TEST: Metadata Population - Broker 8083
+Timestamp: 2025-10-18T23:34:34.902006
+================================================================================
+
+REQUEST:
+----------------------------------------
+method: POST
+url: http://localhost:8083/api/v1/storage/metadata
+body:
+{
+  "brokers": [
+    {
+      "id": 1,
+      "host": "localhost",
+      "port": 8081,
+      "isAlive": true,
+      "lastHeartbeat": 1703123456789
+    },
+    {
+      "id": 2,
+      "host": "localhost",
+      "port": 8082,
+      "isAlive": true,
+      "lastHeartbeat": 1703123456789
+    },
+    {
+      "id": 3,
+      "host": "localhost",
+      "port": 8083,
+      "isAlive": true,
+      "lastHeartbeat": 1703123456789
+    }
+  ],
+  "partitions": [
+    {
+      "topic": "test-topic",
+      "partition": 0,
+      "leaderId": 1,
+      "followerIds": [
+        2,
+        3
+      ],
+      "isrIds": [
+        1,
+        2,
+        3
+      ],
+      "leaderEpoch": 1
+    },
+    {
+      "topic": "orders",
+      "partition": 0,
+      "leaderId": 2,
+      "followerIds": [
+        1,
+        3
+      ],
+      "isrIds": [
+        2,
+        1
+      ],
+      "leaderEpoch": 1
+    },
+    {
+      "topic": "orders",
+      "partition": 1,
+      "leaderId": 3,
+      "followerIds": [
+        1,
+        2
+      ],
+      "isrIds": [
+        3,
+        2
+      ],
+      "leaderEpoch": 1
+    }
+  ],
+  "timestamp": 1703123456789
+}
+
+RESPONSE:
+----------------------------------------
+status_code: 200
+headers:
+{
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Date": "Sat, 18 Oct 2025 18:04:34 GMT",
+  "Keep-Alive": "timeout=60",
+  "Connection": "keep-alive"
+}
+body:
+{
+  "success": true,
+  "errorCode": "NONE",
+  "errorMessage": null,
+  "processedTimestamp": 1760810674894,
+  "brokerId": 3
+}
+
+================================================================================
+
+================================================================================
+TEST: Produce with acks=0 (orders-0)
+Timestamp: 2025-10-18T23:34:40.676523
+================================================================================
+
+REQUEST:
+----------------------------------------
+method: POST
+url: http://localhost:8082/api/v1/storage/messages
+port: 8082
+topic: orders
+partition: 0
+acks: 0
+body:
+{
+  "topic": "orders",
+  "partition": 0,
+  "producerId": 10001,
+  "producerEpoch": 1,
+  "messages": [
+    {
+      "key": "order-acks0-key",
+      "value": [
+        79,
+        114,
+        100,
+        101,
+        114,
+        32,
+        119,
+        105,
+        116,
+        104,
+        32,
+        97,
+        99,
+        107,
+        115,
+        61,
+        48
+      ],
+      "timestamp": 1760810680596,
+      "headers": {
+        "test": "acks=0"
+      }
+    }
+  ],
+  "requiredAcks": 0,
+  "timeoutMs": 30000
+}
+
+RESPONSE:
+----------------------------------------
+status_code: 200
+response_time_ms: 77.66
+headers:
+{
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Date": "Sat, 18 Oct 2025 18:04:40 GMT",
+  "Keep-Alive": "timeout=60",
+  "Connection": "keep-alive"
+}
+body:
+{
+  "topic": "orders",
+  "partition": 0,
+  "results": [
+    {
+      "offset": 14,
+      "timestamp": 1760810680596,
+      "errorCode": "NONE",
+      "errorMessage": null
+    }
+  ],
+  "throttleTimeMs": null,
+  "errorMessage": null,
+  "errorCode": "NONE",
+  "success": true
+}
+
+================================================================================
+
+================================================================================
+TEST: Produce with acks=1 (orders-0)
+Timestamp: 2025-10-18T23:34:41.728052
+================================================================================
+
+REQUEST:
+----------------------------------------
+method: POST
+url: http://localhost:8082/api/v1/storage/messages
+port: 8082
+topic: orders
+partition: 0
+acks: 1
+body:
+{
+  "topic": "orders",
+  "partition": 0,
+  "producerId": 10002,
+  "producerEpoch": 1,
+  "messages": [
+    {
+      "key": "order-acks1-key",
+      "value": [
+        79,
+        114,
+        100,
+        101,
+        114,
+        32,
+        119,
+        105,
+        116,
+        104,
+        32,
+        97,
+        99,
+        107,
+        115,
+        61,
+        49
+      ],
+      "timestamp": 1760810681679,
+      "headers": {
+        "test": "acks=1"
+      }
+    }
+  ],
+  "requiredAcks": 1,
+  "timeoutMs": 30000
+}
+
+RESPONSE:
+----------------------------------------
+status_code: 200
+response_time_ms: 48.68
+headers:
+{
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Date": "Sat, 18 Oct 2025 18:04:41 GMT",
+  "Keep-Alive": "timeout=60",
+  "Connection": "keep-alive"
+}
+body:
+{
+  "topic": "orders",
+  "partition": 0,
+  "results": [
+    {
+      "offset": 15,
+      "timestamp": 1760810681679,
+      "errorCode": "NONE",
+      "errorMessage": null
+    }
+  ],
+  "throttleTimeMs": null,
+  "errorMessage": null,
+  "errorCode": "NONE",
+  "success": true
+}
+
+================================================================================
+
+================================================================================
+TEST: Produce with acks=-1 (orders-1)
+Timestamp: 2025-10-18T23:34:42.823899
+================================================================================
+
+REQUEST:
+----------------------------------------
+method: POST
+url: http://localhost:8083/api/v1/storage/messages
+port: 8083
+topic: orders
+partition: 1
+acks: -1
+body:
+{
+  "topic": "orders",
+  "partition": 1,
+  "producerId": 10003,
+  "producerEpoch": 1,
+  "messages": [
+    {
+      "key": "order-acks-all-key",
+      "value": [
+        79,
+        114,
+        100,
+        101,
+        114,
+        32,
+        119,
+        105,
+        116,
+        104,
+        32,
+        97,
+        99,
+        107,
+        115,
+        61,
+        45,
+        49
+      ],
+      "timestamp": 1760810682733,
+      "headers": {
+        "test": "acks=-1"
+      }
+    }
+  ],
+  "requiredAcks": -1,
+  "timeoutMs": 30000
+}
+
+RESPONSE:
+----------------------------------------
+status_code: 200
+response_time_ms: 89.8
+headers:
+{
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Date": "Sat, 18 Oct 2025 18:04:42 GMT",
+  "Keep-Alive": "timeout=60",
+  "Connection": "keep-alive"
+}
+body:
+{
+  "topic": "orders",
+  "partition": 1,
+  "results": [
+    {
+      "offset": 8,
+      "timestamp": 1760810682733,
+      "errorCode": "NONE",
+      "errorMessage": null
+    }
+  ],
+  "throttleTimeMs": null,
+  "errorMessage": null,
+  "errorCode": "NONE",
+  "success": true
+}
+
+================================================================================
+
+================================================================================
+TEST: Get HWM for orders-0
+Timestamp: 2025-10-18T23:34:42.833672
+================================================================================
+
+REQUEST:
+----------------------------------------
+method: GET
+url: http://localhost:8082/api/v1/storage/partitions/orders/0/high-water-mark
+port: 8082
+
+RESPONSE:
+----------------------------------------
+status_code: 200
+headers:
+{
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Date": "Sat, 18 Oct 2025 18:04:42 GMT",
+  "Keep-Alive": "timeout=60",
+  "Connection": "keep-alive"
+}
+body: 16
+
+================================================================================
+
+================================================================================
+TEST: Get HWM for orders-1
+Timestamp: 2025-10-18T23:34:42.842741
+================================================================================
+
+REQUEST:
+----------------------------------------
+method: GET
+url: http://localhost:8083/api/v1/storage/partitions/orders/1/high-water-mark
+port: 8083
+
+RESPONSE:
+----------------------------------------
+status_code: 200
+headers:
+{
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Date": "Sat, 18 Oct 2025 18:04:42 GMT",
+  "Keep-Alive": "timeout=60",
+  "Connection": "keep-alive"
+}
+body: 9
+
+================================================================================
+
+================================================================================
+TEST: Batch Publish to orders-0
+Timestamp: 2025-10-18T23:34:45.951024
+================================================================================
+
+REQUEST:
+----------------------------------------
+method: POST
+url: http://localhost:8082/api/v1/storage/messages
+port: 8082
+topic: orders
+partition: 0
+acks: 1
+message_count: 3
+body:
+{
+  "topic": "orders",
+  "partition": 0,
+  "producerId": "batch-orders-p0",
+  "producerEpoch": 1,
+  "messages": [
+    {
+      "key": "batch-order-001",
+      "value": [
+        66,
+        97,
+        116,
+        99,
+        104,
+        32,
+        79,
+        114,
+        100,
+        101,
+        114,
+        32,
+        48,
+        48,
+        49
+      ],
+      "timestamp": 1760810685898,
+      "headers": {
+        "batch": "orders-p0",
+        "seq": 1
+      }
+    },
+    {
+      "key": "batch-order-002",
+      "value": [
+        66,
+        97,
+        116,
+        99,
+        104,
+        32,
+        79,
+        114,
+        100,
+        101,
+        114,
+        32,
+        48,
+        48,
+        50
+      ],
+      "timestamp": 1760810685899,
+      "headers": {
+        "batch": "orders-p0",
+        "seq": 2
+      }
+    },
+    {
+      "key": "batch-order-003",
+      "value": [
+        66,
+        97,
+        116,
+        99,
+        104,
+        32,
+        79,
+        114,
+        100,
+        101,
+        114,
+        32,
+        48,
+        48,
+        51
+      ],
+      "timestamp": 1760810685900,
+      "headers": {
+        "batch": "orders-p0",
+        "seq": 3
+      }
+    }
+  ],
+  "requiredAcks": 1,
+  "timeoutMs": 30000
+}
+
+RESPONSE:
+----------------------------------------
+status_code: 200
+response_time_ms: 52.21
+headers:
+{
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Date": "Sat, 18 Oct 2025 18:04:45 GMT",
+  "Keep-Alive": "timeout=60",
+  "Connection": "keep-alive"
+}
+body:
+{
+  "topic": "orders",
+  "partition": 0,
+  "results": [
+    {
+      "offset": 16,
+      "timestamp": 1760810685898,
+      "errorCode": "NONE",
+      "errorMessage": null
+    },
+    {
+      "offset": 17,
+      "timestamp": 1760810685899,
+      "errorCode": "NONE",
+      "errorMessage": null
+    },
+    {
+      "offset": 18,
+      "timestamp": 1760810685900,
+      "errorCode": "NONE",
+      "errorMessage": null
+    }
+  ],
+  "throttleTimeMs": null,
+  "errorMessage": null,
+  "errorCode": "NONE",
+  "success": true
+}
+
+================================================================================
+
+================================================================================
+TEST: Batch Publish to orders-1 (acks=-1)
+Timestamp: 2025-10-18T23:34:47.042409
+================================================================================
+
+REQUEST:
+----------------------------------------
+method: POST
+url: http://localhost:8083/api/v1/storage/messages
+port: 8083
+topic: orders
+partition: 1
+acks: -1
+message_count: 2
+body:
+{
+  "topic": "orders",
+  "partition": 1,
+  "producerId": "batch-orders-p1",
+  "producerEpoch": 1,
+  "messages": [
+    {
+      "key": "batch-order-101",
+      "value": [
+        66,
+        97,
+        116,
+        99,
+        104,
+        32,
+        79,
+        114,
+        100,
+        101,
+        114,
+        32,
+        49,
+        48,
+        49
+      ],
+      "timestamp": 1760810686972,
+      "headers": {
+        "batch": "orders-p1",
+        "seq": 1
+      }
+    },
+    {
+      "key": "batch-order-102",
+      "value": [
+        66,
+        97,
+        116,
+        99,
+        104,
+        32,
+        79,
+        114,
+        100,
+        101,
+        114,
+        32,
+        49,
+        48,
+        50
+      ],
+      "timestamp": 1760810686973,
+      "headers": {
+        "batch": "orders-p1",
+        "seq": 2
+      }
+    }
+  ],
+  "requiredAcks": -1,
+  "timeoutMs": 30000
+}
+
+RESPONSE:
+----------------------------------------
+status_code: 200
+response_time_ms: 69.83
+headers:
+{
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Date": "Sat, 18 Oct 2025 18:04:47 GMT",
+  "Keep-Alive": "timeout=60",
+  "Connection": "keep-alive"
+}
+body:
+{
+  "topic": "orders",
+  "partition": 1,
+  "results": [
+    {
+      "offset": 9,
+      "timestamp": 1760810686972,
+      "errorCode": "NONE",
+      "errorMessage": null
+    },
+    {
+      "offset": 10,
+      "timestamp": 1760810686973,
+      "errorCode": "NONE",
+      "errorMessage": null
+    }
+  ],
+  "throttleTimeMs": null,
+  "errorMessage": null,
+  "errorCode": "NONE",
+  "success": true
+}
+
+================================================================================
+
+================================================================================
+TEST: Get HWM for test-topic-0
+Timestamp: 2025-10-18T23:34:54.192945
+================================================================================
+
+REQUEST:
+----------------------------------------
+method: GET
+url: http://localhost:8081/api/v1/storage/partitions/test-topic/0/high-water-mark
+port: 8081
+
+RESPONSE:
+----------------------------------------
+status_code: 200
+headers:
+{
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Date": "Sat, 18 Oct 2025 18:04:54 GMT",
+  "Keep-Alive": "timeout=60",
+  "Connection": "keep-alive"
+}
+body: 11
+
+================================================================================
+
+================================================================================
+TEST: Get HWM for orders-0 (consumer test)
+Timestamp: 2025-10-18T23:34:58.855415
+================================================================================
+
+REQUEST:
+----------------------------------------
+method: GET
+url: http://localhost:8082/api/v1/storage/partitions/orders/0/high-water-mark
+port: 8082
+
+RESPONSE:
+----------------------------------------
+status_code: 200
+headers:
+{
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Date": "Sat, 18 Oct 2025 18:04:58 GMT",
+  "Keep-Alive": "timeout=60",
+  "Connection": "keep-alive"
+}
+body: 19
+
+================================================================================
+
+================================================================================
+TEST: Get HWM for orders-1 (consumer test)
+Timestamp: 2025-10-18T23:34:58.869348
+================================================================================
+
+REQUEST:
+----------------------------------------
+method: GET
+url: http://localhost:8083/api/v1/storage/partitions/orders/1/high-water-mark
+port: 8083
+
+RESPONSE:
+----------------------------------------
+status_code: 200
+headers:
+{
+  "Content-Type": "application/json",
+  "Transfer-Encoding": "chunked",
+  "Date": "Sat, 18 Oct 2025 18:04:58 GMT",
+  "Keep-Alive": "timeout=60",
+  "Connection": "keep-alive"
+}
+body: 11
+
+================================================================================

@@ -51,3 +51,7 @@ spring-boot-app.log
 tmp/
 temp/
 *.tmp
+*.pyc
+*.pyc
+*.pyc
+*.pyc

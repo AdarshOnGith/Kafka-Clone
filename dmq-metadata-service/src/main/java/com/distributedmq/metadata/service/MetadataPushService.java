@@ -1,5 +1,6 @@
 package com.distributedmq.metadata.service;
 
+import com.distributedmq.common.config.ServiceDiscovery;
 import com.distributedmq.common.dto.MetadataUpdateRequest;
 import com.distributedmq.common.dto.MetadataUpdateResponse;
 import com.distributedmq.common.model.BrokerNode;
@@ -23,44 +24,44 @@ import java.util.stream.Collectors;
 public class MetadataPushService {
 
     private final StorageNodeClient storageNodeClient;
-    private final ControllerService controllerService;
 
     /**
-     * Push topic metadata to the paired storage node
+     * Push topic metadata to all storage nodes
      * Called after topic creation or updates
      */
-    public MetadataUpdateResponse pushTopicMetadata(TopicMetadata topicMetadata) {
-        log.info("Pushing topic metadata for topic: {} to paired storage node",
+    public List<MetadataUpdateResponse> pushTopicMetadata(TopicMetadata topicMetadata, List<BrokerNode> activeBrokers) {
+        log.info("Pushing topic metadata for topic: {} to all storage nodes",
                 topicMetadata.getTopicName());
 
         // Convert TopicMetadata to MetadataUpdateRequest
-        MetadataUpdateRequest request = createMetadataUpdateRequest(topicMetadata);
+        MetadataUpdateRequest request = createMetadataUpdateRequest(topicMetadata, activeBrokers);
 
-        // Push to paired storage node
-        MetadataUpdateResponse response = storageNodeClient.pushMetadata(request);
+        // Get all storage service URLs
+        List<String> storageUrls = ServiceDiscovery.getAllStorageServices().stream()
+                .map(ServiceDiscovery.StorageServiceInfo::getUrl)
+                .collect(Collectors.toList());
 
-        if (response.isSuccess()) {
-            log.info("Successfully pushed topic metadata for {} to storage node {}",
-                    topicMetadata.getTopicName(), storageNodeClient.getPairedStorageNodeBrokerId());
-        } else {
-            log.error("Failed to push topic metadata for {} to storage node {}. Error: {}",
-                    topicMetadata.getTopicName(),
-                    storageNodeClient.getPairedStorageNodeBrokerId(),
-                    response.getErrorMessage());
-        }
+        log.info("Pushing to {} storage nodes: {}", storageUrls.size(), storageUrls);
 
-        return response;
+        // Push to all storage nodes
+        List<MetadataUpdateResponse> responses = storageUrls.stream()
+                .map(url -> pushToStorageNode(url, request))
+                .collect(Collectors.toList());
+
+        // Log results
+        long successCount = responses.stream().filter(MetadataUpdateResponse::isSuccess).count();
+        log.info("Topic metadata push completed: {}/{} storage nodes successful",
+                successCount, responses.size());
+
+        return responses;
     }
 
     /**
-     * Push full cluster metadata to the paired storage node
+     * Push full cluster metadata to all storage nodes
      * Used for initial sync or major updates
      */
-    public MetadataUpdateResponse pushFullClusterMetadata() {
-        log.info("Pushing full cluster metadata to paired storage node");
-
-        // Get all active brokers
-        List<BrokerNode> activeBrokers = controllerService.getActiveBrokers();
+    public List<MetadataUpdateResponse> pushFullClusterMetadata(List<BrokerNode> activeBrokers) {
+        log.info("Pushing full cluster metadata to all storage nodes");
 
         // Create metadata update request with all brokers
         MetadataUpdateRequest request = MetadataUpdateRequest.builder()
@@ -70,19 +71,24 @@ public class MetadataPushService {
                 .timestamp(System.currentTimeMillis())
                 .build();
 
-        // Push to paired storage node
-        MetadataUpdateResponse response = storageNodeClient.pushMetadata(request);
+        // Get all storage service URLs
+        List<String> storageUrls = ServiceDiscovery.getAllStorageServices().stream()
+                .map(ServiceDiscovery.StorageServiceInfo::getUrl)
+                .collect(Collectors.toList());
 
-        if (response.isSuccess()) {
-            log.info("Successfully pushed full cluster metadata to storage node {}",
-                    storageNodeClient.getPairedStorageNodeBrokerId());
-        } else {
-            log.error("Failed to push full cluster metadata to storage node {}. Error: {}",
-                    storageNodeClient.getPairedStorageNodeBrokerId(),
-                    response.getErrorMessage());
-        }
+        log.info("Pushing cluster metadata to {} storage nodes: {}", storageUrls.size(), storageUrls);
 
-        return response;
+        // Push to all storage nodes
+        List<MetadataUpdateResponse> responses = storageUrls.stream()
+                .map(url -> pushToStorageNode(url, request))
+                .collect(Collectors.toList());
+
+        // Log results
+        long successCount = responses.stream().filter(MetadataUpdateResponse::isSuccess).count();
+        log.info("Cluster metadata push completed: {}/{} storage nodes successful",
+                successCount, responses.size());
+
+        return responses;
     }
 
     /**
@@ -96,13 +102,13 @@ public class MetadataPushService {
     }
 
     /**
-     * Push partition leadership changes to storage nodes
+     * Push partition leadership changes to all storage nodes
      * Called when partition leaders change
      */
-    public void pushPartitionLeadershipUpdate(String topicName, int partitionId,
+    public List<MetadataUpdateResponse> pushPartitionLeadershipUpdate(String topicName, int partitionId,
                                             int newLeaderId, List<Integer> followers,
                                             List<Integer> isr) {
-        log.info("Pushing partition leadership update for {}-{}: leader={}",
+        log.info("Pushing partition leadership update for {}-{}: leader={} to all storage nodes",
                 topicName, partitionId, newLeaderId);
 
         // Create partition metadata update
@@ -121,30 +127,35 @@ public class MetadataPushService {
                 .timestamp(System.currentTimeMillis())
                 .build();
 
-        // Push to paired storage node
-        MetadataUpdateResponse response = storageNodeClient.pushMetadata(request);
+        // Get all storage service URLs
+        List<String> storageUrls = ServiceDiscovery.getAllStorageServices().stream()
+                .map(ServiceDiscovery.StorageServiceInfo::getUrl)
+                .collect(Collectors.toList());
 
-        if (response.isSuccess()) {
-            log.info("Successfully pushed partition leadership update for {}-{}",
-                    topicName, partitionId);
-        } else {
-            log.error("Failed to push partition leadership update for {}-{}. Error: {}",
-                    topicName, partitionId, response.getErrorMessage());
-        }
+        // Push to all storage nodes
+        List<MetadataUpdateResponse> responses = storageUrls.stream()
+                .map(url -> pushToStorageNode(url, request))
+                .collect(Collectors.toList());
+
+        // Log results
+        long successCount = responses.stream().filter(MetadataUpdateResponse::isSuccess).count();
+        log.info("Partition leadership update push completed: {}/{} storage nodes successful",
+                successCount, responses.size());
+
+        return responses;
     }
 
     /**
      * Convert TopicMetadata to MetadataUpdateRequest
      */
-    private MetadataUpdateRequest createMetadataUpdateRequest(TopicMetadata topicMetadata) {
+    private MetadataUpdateRequest createMetadataUpdateRequest(TopicMetadata topicMetadata, List<BrokerNode> activeBrokers) {
         // Convert partitions
         List<MetadataUpdateRequest.PartitionMetadata> partitionMetadatas =
                 topicMetadata.getPartitions().stream()
                         .map(this::convertPartitionMetadata)
                         .collect(Collectors.toList());
 
-        // Get all active brokers for broker info
-        List<BrokerNode> activeBrokers = controllerService.getActiveBrokers();
+        // Use provided active brokers for broker info
         List<MetadataUpdateRequest.BrokerInfo> brokerInfos = activeBrokers.stream()
                 .map(this::convertBrokerNodeToBrokerInfo)
                 .collect(Collectors.toList());

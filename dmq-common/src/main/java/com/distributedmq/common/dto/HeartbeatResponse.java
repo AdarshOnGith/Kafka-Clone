@@ -2,6 +2,8 @@ package com.distributedmq.common.dto;
 
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
 
 /**
  * Heartbeat response sent by controller to metadata services
@@ -9,6 +11,8 @@ import lombok.Data;
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class HeartbeatResponse {
     /**
      * Whether the heartbeat was processed successfully

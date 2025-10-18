@@ -1,9 +1,11 @@
 server:
-  port: 8081
+  port: ${SERVER_PORT:9091}
 
 spring:
   application:
     name: dmq-metadata-service
+  main:
+    allow-circular-references: true
 
   # Use H2 for development (in-memory database)
   datasource:
@@ -36,13 +38,13 @@ kraft:
     nodes:
       - id: 1
         host: localhost
-        port: 9093
+        port: 9091
       - id: 2
         host: localhost
-        port: 9094
+        port: 9092
       - id: 3
         host: localhost
-        port: 9095
+        port: 9093
 
   # Raft consensus settings
   raft:
@@ -61,8 +63,8 @@ controller:
 dmq:
   service-pairing:
     storage-node:
-      url: "http://localhost:8081"  # Default for node 1, can be overridden
-      broker-id: 1
+      url: ${STORAGE_NODE_URL:http://localhost:8081}  # Default for node 1, can be overridden
+      broker-id: ${BROKER_ID:1}
 
 logging:
   level:

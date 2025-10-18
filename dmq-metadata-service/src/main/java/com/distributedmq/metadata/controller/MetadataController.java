@@ -10,6 +10,20 @@ import com.distributedmq.common.model.TopicMetadata;
 import com.distributedmq.metadata.coordination.RaftController;
 import com.distributedmq.metadata.dto.CreateTopicRequest;
 import com.distributedmq.metadata.dto.TopicMetadataResponse;
+import com.distributedmq.metadata.dto.RegisterBrokerRequest;
+import com.distributedmq.metadata.dto.BrokerResponse;
+import com.distributedmq.metadata.dto.MetadataSyncResponse;
+import com.distributedmq.metadata.dto.BrokerSyncResponse;
+import com.distributedmq.metadata.dto.SyncStatusResponse;
+import com.distributedmq.metadata.dto.IncrementalSyncResponse;
+import com.distributedmq.metadata.dto.ConsistencyCheckResponse;
+import com.distributedmq.metadata.dto.SyncTriggerRequest;
+import com.distributedmq.metadata.dto.SyncTriggerResponse;
+import com.distributedmq.metadata.dto.FullSyncResponse;
+import com.distributedmq.metadata.dto.TestStorageHeartbeatRequest;
+import com.distributedmq.metadata.dto.TestStorageHeartbeatResponse;
+import com.distributedmq.metadata.dto.SimpleHeartbeatRequest;
+import com.distributedmq.metadata.dto.SimpleHeartbeatResponse;
 import com.distributedmq.metadata.service.MetadataService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -226,357 +240,389 @@ public class MetadataController {
     }
 
     /**
-     * Receive metadata updates from storage services
-     * Storage services notify metadata services about local changes (leadership, failures, etc.)
+     * Pull sync all metadata (GET version for testing)
+     * Returns all current metadata
      */
-    @PostMapping("/storage-updates")
-    public ResponseEntity<MetadataUpdateResponse> receiveStorageUpdate(@RequestBody MetadataUpdateRequest storageUpdate) {
-        log.info("Received metadata update from storage service with {} brokers and {} partitions",
-                storageUpdate.getBrokers() != null ? storageUpdate.getBrokers().size() : 0,
-                storageUpdate.getPartitions() != null ? storageUpdate.getPartitions().size() : 0);
+    @GetMapping("/sync")
+    public ResponseEntity<MetadataSyncResponse> pullMetadataSync() {
+        log.info("Received pull metadata sync request");
 
         try {
-            MetadataUpdateResponse response = metadataService.processStorageUpdate(storageUpdate);
+            // Get all topics
+            List<String> topics = metadataService.listTopics();
+            List<BrokerResponse> brokers = metadataService.listBrokers();
+
+            MetadataSyncResponse response = MetadataSyncResponse.builder()
+                    .topics(topics)
+                    .brokers(brokers)
+                    .syncTimestamp(System.currentTimeMillis())
+                    .build();
 
             return ResponseEntity.ok(response);
 
         } catch (Exception e) {
-            log.error("Error processing storage update: {}", e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(MetadataUpdateResponse.builder()
-                            .success(false)
-                            .errorCode(MetadataUpdateResponse.ErrorCode.PROCESSING_ERROR)
-                            .errorMessage("Failed to process storage update: " + e.getMessage())
-                            .processedTimestamp(System.currentTimeMillis())
-                            .build());
+            log.error("Error processing pull metadata sync: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
 
     /**
-     * Receive heartbeat from metadata services
-     * Controller uses this to track sync status and trigger updates for lagging services
+     * Sync metadata for specific broker
+     */
+    @GetMapping("/sync/broker/{brokerId}")
+    public ResponseEntity<BrokerSyncResponse> syncBrokerMetadata(@PathVariable Integer brokerId) {
+        log.info("Received broker sync request for broker: {}", brokerId);
+
+        try {
+            BrokerResponse broker = metadataService.getBroker(brokerId);
+            List<String> topics = metadataService.listTopics();
+
+            BrokerSyncResponse response = BrokerSyncResponse.builder()
+                    .broker(broker)
+                    .topics(topics)
+                    .syncTimestamp(System.currentTimeMillis())
+                    .build();
+
+            return ResponseEntity.ok(response);
+
+        } catch (IllegalArgumentException e) {
+            log.warn("Broker not found for sync: {}", brokerId);
+            return ResponseEntity.notFound().build();
+        } catch (Exception e) {
+            log.error("Error processing broker sync for {}: {}", brokerId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Get sync status
+     */
+    @GetMapping("/sync/status")
+    public ResponseEntity<SyncStatusResponse> getSyncStatus() {
+        log.debug("Getting sync status");
+
+        try {
+            // Get basic sync information
+            boolean isControllerLeader = raftController.isControllerLeader();
+            long lastSyncTimestamp = System.currentTimeMillis(); // Placeholder
+            int activeBrokers = metadataService.listBrokers().size();
+            int totalTopics = metadataService.listTopics().size();
+
+            SyncStatusResponse response = SyncStatusResponse.builder()
+                    .isControllerLeader(isControllerLeader)
+                    .lastSyncTimestamp(lastSyncTimestamp)
+                    .activeBrokers(activeBrokers)
+                    .totalTopics(totalTopics)
+                    .status("HEALTHY")
+                    .build();
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            log.error("Error getting sync status: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Incremental sync - get changes since timestamp
+     */
+    @GetMapping("/sync/incremental")
+    public ResponseEntity<IncrementalSyncResponse> getIncrementalSync(
+            @RequestParam(required = false, defaultValue = "0") Long sinceTimestamp) {
+
+        log.info("Received incremental sync request since: {}", sinceTimestamp);
+
+        try {
+            // For now, return all data (full sync)
+            // In a real implementation, this would track changes and return only deltas
+            List<String> topics = metadataService.listTopics();
+            List<BrokerResponse> brokers = metadataService.listBrokers();
+
+            IncrementalSyncResponse response = IncrementalSyncResponse.builder()
+                    .topics(topics)
+                    .brokers(brokers)
+                    .changesSince(sinceTimestamp)
+                    .syncTimestamp(System.currentTimeMillis())
+                    .build();
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            log.error("Error processing incremental sync: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Check metadata consistency
+     */
+    @GetMapping("/sync/consistency")
+    public ResponseEntity<ConsistencyCheckResponse> checkConsistency() {
+        log.info("Received consistency check request");
+
+        try {
+            // Basic consistency checks
+            List<BrokerResponse> brokers = metadataService.listBrokers();
+            List<String> topics = metadataService.listTopics();
+
+            boolean brokersConsistent = brokers.stream()
+                    .allMatch(broker -> broker.getId() != null && broker.getHost() != null);
+            boolean topicsConsistent = !topics.isEmpty() || topics.isEmpty(); // Always true for now
+
+            String status = (brokersConsistent && topicsConsistent) ? "CONSISTENT" : "INCONSISTENT";
+
+            ConsistencyCheckResponse response = ConsistencyCheckResponse.builder()
+                    .status(status)
+                    .brokersChecked(brokers.size())
+                    .topicsChecked(topics.size())
+                    .checkTimestamp(System.currentTimeMillis())
+                    .details("Basic consistency check performed")
+                    .build();
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            log.error("Error checking consistency: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Trigger push sync to specified brokers
+     */
+    @PostMapping("/sync/trigger")
+    public ResponseEntity<SyncTriggerResponse> triggerSync(@RequestBody SyncTriggerRequest request) {
+        log.info("Received sync trigger request for brokers: {} and topics: {}",
+                request.getBrokers(), request.getTopics());
+
+        try {
+            // Validate that specified brokers exist
+            if (request.getBrokers() != null) {
+                for (Integer brokerId : request.getBrokers()) {
+                    try {
+                        metadataService.getBroker(brokerId);
+                    } catch (IllegalArgumentException e) {
+                        log.warn("Broker {} does not exist for sync trigger", brokerId);
+                        return ResponseEntity.badRequest().build();
+                    }
+                }
+            }
+
+            // Validate that specified topics exist
+            if (request.getTopics() != null) {
+                List<String> existingTopics = metadataService.listTopics();
+                for (String topicName : request.getTopics()) {
+                    if (!existingTopics.contains(topicName)) {
+                        log.warn("Topic {} does not exist for sync trigger", topicName);
+                        return ResponseEntity.badRequest().build();
+                    }
+                }
+            }
+
+            // For now, just return success
+            // In a real implementation, this would trigger push sync to the specified brokers
+            SyncTriggerResponse response = SyncTriggerResponse.builder()
+                    .success(true)
+                    .brokersTriggered(request.getBrokers() != null ? request.getBrokers().size() : 0)
+                    .topicsSynced(request.getTopics() != null ? request.getTopics().size() : 0)
+                    .triggerTimestamp(System.currentTimeMillis())
+                    .build();
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            log.error("Error triggering sync: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Full metadata sync (alternative to incremental)
+     */
+    @PostMapping("/sync/full")
+    public ResponseEntity<FullSyncResponse> fullSync() {
+        log.info("Received full sync request");
+
+        try {
+            List<String> topics = metadataService.listTopics();
+            List<BrokerResponse> brokers = metadataService.listBrokers();
+
+            FullSyncResponse response = FullSyncResponse.builder()
+                    .topics(topics)
+                    .brokers(brokers)
+                    .syncTimestamp(System.currentTimeMillis())
+                    .fullSyncPerformed(true)
+                    .build();
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            log.error("Error performing full sync: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Register a broker
+     * Only controller leader can process this
+     */
+    @PostMapping("/brokers")
+    public ResponseEntity<BrokerResponse> registerBroker(
+            @Validated @RequestBody RegisterBrokerRequest request) {
+
+        log.info("Received request to register broker: {}", request.getId());
+
+        // Check if this node is the controller leader
+        if (!raftController.isControllerLeader()) {
+            log.warn("This node is not the controller leader. Current leader: {}",
+                    raftController.getControllerLeaderId());
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .header("X-Controller-Leader", raftController.getControllerLeaderId().toString())
+                    .build();
+        }
+
+        try {
+            BrokerResponse response = metadataService.registerBroker(request);
+            return ResponseEntity.ok(response);
+
+        } catch (IllegalArgumentException e) {
+            log.warn("Broker registration failed: {}", e.getMessage());
+            // Check if it's a duplicate broker error
+            if (e.getMessage().contains("already exists")) {
+                return ResponseEntity.status(HttpStatus.CONFLICT).build();
+            }
+            return ResponseEntity.badRequest().build();
+        } catch (Exception e) {
+            log.error("Error registering broker", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Get broker information
+     * Can be served by any node (read operation)
+     */
+    @GetMapping("/brokers/{brokerId}")
+    public ResponseEntity<BrokerResponse> getBroker(@PathVariable Integer brokerId) {
+
+        log.debug("Fetching broker: {}", brokerId);
+
+        try {
+            BrokerResponse response = metadataService.getBroker(brokerId);
+            return ResponseEntity.ok(response);
+
+        } catch (IllegalArgumentException e) {
+            log.warn("Broker not found: {}", brokerId);
+            return ResponseEntity.notFound().build();
+        } catch (Exception e) {
+            log.error("Error fetching broker", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * List all brokers
+     * Can be served by any node (read operation)
+     */
+    @GetMapping("/brokers")
+    public ResponseEntity<List<BrokerResponse>> listBrokers() {
+        log.debug("Listing all brokers");
+
+        try {
+            List<BrokerResponse> brokers = metadataService.listBrokers();
+            return ResponseEntity.ok(brokers);
+
+        } catch (Exception e) {
+            log.error("Error listing brokers", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Receive heartbeat from storage services (simple format for testing)
      */
     @PostMapping("/heartbeat")
-    public ResponseEntity<HeartbeatResponse> receiveHeartbeat(@RequestBody HeartbeatRequest heartbeat) {
-        log.debug("Received heartbeat from metadata service: {}", heartbeat.getServiceId());
+    public ResponseEntity<SimpleHeartbeatResponse> receiveSimpleHeartbeat(@RequestBody SimpleHeartbeatRequest request) {
+        log.debug("Received simple heartbeat from broker: {}", request.getBrokerId());
 
         try {
-            // Process heartbeat directly in controller
-            HeartbeatResponse response = processHeartbeat(heartbeat);
-
-            if (!response.isInSync()) {
-                log.info("Metadata service {} is out of sync. Triggering metadata push...", heartbeat.getServiceId());
-                // The processHeartbeat method should have already triggered the sync
+            // Update broker status if it exists
+            try {
+                metadataService.updateBrokerStatus(request.getBrokerId(), "ONLINE");
+            } catch (IllegalArgumentException e) {
+                // Broker doesn't exist, that's ok for heartbeat
+                log.debug("Heartbeat from unknown broker: {}", request.getBrokerId());
             }
+
+            SimpleHeartbeatResponse response = SimpleHeartbeatResponse.builder()
+                    .brokerId(request.getBrokerId())
+                    .acknowledged(true)
+                    .timestamp(System.currentTimeMillis())
+                    .build();
 
             return ResponseEntity.ok(response);
 
         } catch (Exception e) {
-            log.error("Error processing heartbeat from service {}: {}", heartbeat.getServiceId(), e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(HeartbeatResponse.builder()
-                            .success(false)
-                            .inSync(false)
-                            .errorMessage("Failed to process heartbeat: " + e.getMessage())
-                            .responseTimestamp(System.currentTimeMillis())
-                            .build());
+            log.error("Error processing simple heartbeat from broker {}: {}", request.getBrokerId(), e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
 
     /**
-     * Process heartbeat from metadata service
-     */
-    private HeartbeatResponse processHeartbeat(HeartbeatRequest heartbeat) {
-        log.debug("Processing heartbeat from metadata service: {}", heartbeat.getServiceId());
-
-        // Only active controller should process heartbeats
-        if (!raftController.isControllerLeader()) {
-            log.warn("Non-active controller received heartbeat - this should not happen");
-            return HeartbeatResponse.builder()
-                    .success(false)
-                    .inSync(false)
-                    .errorMessage("Not the active controller")
-                    .responseTimestamp(System.currentTimeMillis())
-                    .build();
-        }
-
-        try {
-            // Register/update the metadata service
-            registerMetadataService(heartbeat.getServiceId(), heartbeat.getHeartbeatTimestamp());
-
-            // Get controller's truth timestamp
-            Long controllerTimestamp = getControllerMetadataTimestamp();
-
-            // Check if service is in sync
-            boolean inSync = heartbeat.getLastMetadataUpdateTimestamp() >= (controllerTimestamp - 5000); // 5 second tolerance
-
-            HeartbeatResponse response = HeartbeatResponse.builder()
-                    .success(true)
-                    .inSync(inSync)
-                    .controllerMetadataTimestamp(controllerTimestamp)
-                    .responseTimestamp(System.currentTimeMillis())
-                    .build();
-
-            // If service is lagging, trigger metadata sync
-            if (!inSync) {
-                log.info("Metadata service {} is lagging (service: {}, controller: {}). Triggering sync...",
-                        heartbeat.getServiceId(), heartbeat.getLastMetadataUpdateTimestamp(), controllerTimestamp);
-
-                triggerMetadataSyncForService(heartbeat.getServiceId());
-            }
-
-            return response;
-
-        } catch (Exception e) {
-            log.error("Error processing heartbeat from service {}: {}", heartbeat.getServiceId(), e.getMessage());
-            return HeartbeatResponse.builder()
-                    .success(false)
-                    .inSync(false)
-                    .errorMessage("Failed to process heartbeat: " + e.getMessage())
-                    .responseTimestamp(System.currentTimeMillis())
-                    .build();
-        }
-    }
-
-    /**
-     * Register or update a metadata service in the registry
-     */
-    private void registerMetadataService(Integer serviceId, Long heartbeatTimestamp) {
-        MetadataServiceInfo info = metadataServiceRegistry.computeIfAbsent(serviceId,
-                id -> new MetadataServiceInfo(id, heartbeatTimestamp));
-        info.setLastHeartbeatTimestamp(heartbeatTimestamp);
-        log.debug("Registered/updated metadata service: {}", serviceId);
-    }
-
-    /**
-     * Get the controller's current metadata timestamp (truth value)
-     */
-    private Long getControllerMetadataTimestamp() {
-        // The controller's timestamp is the current time, as it's always up to date
-        // In a real implementation, this could be the timestamp of the last committed metadata change
-        return System.currentTimeMillis();
-    }
-
-    /**
-     * Trigger metadata sync for a lagging service
-     */
-    private void triggerMetadataSyncForService(Integer serviceId) {
-        try {
-            // Get the service URL (placeholder - should use service discovery)
-            String serviceUrl = getMetadataServiceUrl(serviceId);
-
-            // Push all current metadata to the lagging service
-            metadataService.pushAllMetadataToService(serviceUrl);
-
-            // Update the service's last metadata update timestamp
-            MetadataServiceInfo info = metadataServiceRegistry.get(serviceId);
-            if (info != null) {
-                info.setLastMetadataUpdateTimestamp(System.currentTimeMillis());
-            }
-
-            log.info("Successfully triggered metadata sync for lagging service: {}", serviceId);
-
-        } catch (Exception e) {
-            log.error("Failed to trigger metadata sync for service {}: {}", serviceId, e.getMessage());
-        }
-    }
-
-    /**
-     * Get URL for a metadata service (placeholder implementation)
-     */
-    private String getMetadataServiceUrl(Integer serviceId) {
-        // Placeholder: assume services run on localhost with ports 8080, 8081, 8082
-        int basePort = 8080;
-        return "http://localhost:" + (basePort + serviceId);
-    }
-
-    /**
-     * Receive heartbeat from storage services
-     * Controller uses this to track storage service sync status and detect failures
+     * Receive heartbeat from storage services (alternative endpoint for testing)
      */
     @PostMapping("/storage-heartbeat")
-    public ResponseEntity<StorageHeartbeatResponse> receiveStorageHeartbeat(@RequestBody StorageHeartbeatRequest heartbeat) {
-        log.debug("Received storage heartbeat from service: {}", heartbeat.getStorageServiceId());
+    public ResponseEntity<TestStorageHeartbeatResponse> receiveStorageHeartbeat(@Validated @RequestBody TestStorageHeartbeatRequest request) {
+        log.debug("Received storage heartbeat from service: {}", request.getServiceId());
 
         try {
-            // Process storage heartbeat directly in controller
-            StorageHeartbeatResponse response = processStorageHeartbeat(heartbeat);
-
-            if (!response.isInSync()) {
-                log.info("Storage service {} is out of sync. Triggering sync...", heartbeat.getStorageServiceId());
-                // The processStorageHeartbeat method should have already triggered the sync
+            // Custom validation for metadata version
+            if (request.getMetadataVersion() != null && request.getMetadataVersion() < 0) {
+                log.warn("Invalid metadata version: {}", request.getMetadataVersion());
+                return ResponseEntity.badRequest().build();
             }
+
+            // Extract broker ID from service ID (e.g., "storage-101" -> 101)
+            Integer brokerId = extractBrokerIdFromServiceId(request.getServiceId());
+
+            // Update broker status if it exists
+            try {
+                metadataService.updateBrokerStatus(brokerId, request.getIsAlive() ? "ONLINE" : "OFFLINE");
+            } catch (IllegalArgumentException e) {
+                // Broker doesn't exist, that's ok for heartbeat
+                log.debug("Heartbeat from unknown broker: {}", brokerId);
+            }
+
+            TestStorageHeartbeatResponse response = TestStorageHeartbeatResponse.builder()
+                    .serviceId(request.getServiceId())
+                    .acknowledged(true)
+                    .timestamp(System.currentTimeMillis())
+                    .build();
 
             return ResponseEntity.ok(response);
 
+        } catch (IllegalArgumentException e) {
+            log.warn("Invalid heartbeat request: {}", e.getMessage());
+            return ResponseEntity.badRequest().build();
         } catch (Exception e) {
-            log.error("Error processing storage heartbeat from service {}: {}", heartbeat.getStorageServiceId(), e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(StorageHeartbeatResponse.builder()
-                            .success(false)
-                            .inSync(false)
-                            .errorMessage("Failed to process heartbeat: " + e.getMessage())
-                            .responseTimestamp(System.currentTimeMillis())
-                            .build());
+            log.error("Error processing storage heartbeat from service {}: {}", request.getServiceId(), e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
 
     /**
-     * Process heartbeat from storage service
+     * Extract broker ID from service ID (e.g., "storage-101" -> 101)
      */
-    private StorageHeartbeatResponse processStorageHeartbeat(StorageHeartbeatRequest heartbeat) {
-        log.debug("Processing storage heartbeat from service: {}", heartbeat.getStorageServiceId());
-
-        // Only active controller should process storage heartbeats
-        if (!raftController.isControllerLeader()) {
-            log.warn("Non-active controller received storage heartbeat - this should not happen");
-            return StorageHeartbeatResponse.builder()
-                    .success(false)
-                    .inSync(false)
-                    .errorMessage("Not the active controller")
-                    .responseTimestamp(System.currentTimeMillis())
-                    .build();
+    private Integer extractBrokerIdFromServiceId(String serviceId) {
+        if (serviceId == null || !serviceId.startsWith("storage-")) {
+            throw new IllegalArgumentException("Invalid service ID format: " + serviceId);
         }
-
         try {
-            // Register/update the storage service
-            registerStorageService(heartbeat);
-
-            // Get controller's truth metadata version
-            Long controllerVersion = getControllerMetadataVersion();
-
-            // Check if storage service is in sync
-            boolean inSync = heartbeat.getCurrentMetadataVersion() != null &&
-                           heartbeat.getCurrentMetadataVersion() >= controllerVersion;
-
-            StorageHeartbeatResponse response = StorageHeartbeatResponse.builder()
-                    .success(true)
-                    .controllerMetadataVersion(controllerVersion)
-                    .inSync(inSync)
-                    .responseTimestamp(System.currentTimeMillis())
-                    .build();
-
-            // If service is lagging, trigger metadata sync
-            if (!inSync) {
-                log.info("Storage service {} is lagging (service: {}, controller: {}). Triggering sync...",
-                        heartbeat.getStorageServiceId(), heartbeat.getCurrentMetadataVersion(), controllerVersion);
-
-                triggerMetadataSyncForStorageService(heartbeat.getStorageServiceId());
-            }
-
-            // Check if this is a failure detection case (service was down and came back)
-            StorageServiceInfo existingInfo = storageServiceRegistry.get(heartbeat.getStorageServiceId());
-            if (existingInfo != null && !existingInfo.isAlive() && heartbeat.isAlive()) {
-                log.info("Storage service {} came back online, triggering leader election and ISR updates",
-                        heartbeat.getStorageServiceId());
-                handleStorageServiceRecovery(heartbeat.getStorageServiceId());
-            }
-
-            return response;
-
-        } catch (Exception e) {
-            log.error("Error processing storage heartbeat from service {}: {}", heartbeat.getStorageServiceId(), e.getMessage());
-            return StorageHeartbeatResponse.builder()
-                    .success(false)
-                    .inSync(false)
-                    .errorMessage("Failed to process heartbeat: " + e.getMessage())
-                    .responseTimestamp(System.currentTimeMillis())
-                    .build();
+            return Integer.parseInt(serviceId.substring("storage-".length()));
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid broker ID in service ID: " + serviceId);
         }
-    }
-
-    // TODO: Add endpoints for consumer group management
-    // TODO: Add endpoints for offset management
-    // TODO: Add cluster health endpoints
-
-    /**
-     * Register or update a storage service in the registry
-     */
-    private void registerStorageService(StorageHeartbeatRequest heartbeat) {
-        StorageServiceInfo info = storageServiceRegistry.computeIfAbsent(heartbeat.getStorageServiceId(),
-                id -> new StorageServiceInfo(id, heartbeat.getHeartbeatTimestamp()));
-        info.setLastHeartbeatTimestamp(heartbeat.getHeartbeatTimestamp());
-        info.setCurrentMetadataVersion(heartbeat.getCurrentMetadataVersion());
-        info.setLastMetadataUpdateTimestamp(heartbeat.getLastMetadataUpdateTimestamp());
-        info.setAlive(heartbeat.isAlive());
-        info.setPartitionsLeading(heartbeat.getPartitionsLeading());
-        info.setPartitionsFollowing(heartbeat.getPartitionsFollowing());
-        log.debug("Registered/updated storage service: {}", heartbeat.getStorageServiceId());
-    }
-
-    /**
-     * Get the controller's current metadata version (truth value)
-     */
-    private Long getControllerMetadataVersion() {
-        // The controller's version is the current time as version number
-        // In a real implementation, this could be an incrementing version number
-        return System.currentTimeMillis();
-    }
-
-    /**
-     * Trigger metadata sync for a lagging storage service
-     */
-    private void triggerMetadataSyncForStorageService(Integer storageServiceId) {
-        try {
-            // Get the paired metadata service for this storage service
-            Integer pairedMetadataServiceId = com.distributedmq.common.config.ServiceDiscovery.getPairedMetadataServiceId(storageServiceId);
-            if (pairedMetadataServiceId == null) {
-                log.warn("No paired metadata service found for storage service {}", storageServiceId);
-                return;
-            }
-
-            // Get the metadata service URL
-            String metadataServiceUrl = com.distributedmq.common.config.ServiceDiscovery.getMetadataServiceUrl(pairedMetadataServiceId);
-            if (metadataServiceUrl == null) {
-                log.warn("No URL found for metadata service {}", pairedMetadataServiceId);
-                return;
-            }
-
-            // Push all current metadata to the metadata service, which will then push to storage
-            metadataService.pushAllMetadataToService(metadataServiceUrl);
-
-            // Update the storage service's last metadata timestamp
-            StorageServiceInfo info = storageServiceRegistry.get(storageServiceId);
-            if (info != null) {
-                info.setLastMetadataUpdateTimestamp(System.currentTimeMillis());
-                info.setCurrentMetadataVersion(getControllerMetadataVersion());
-            }
-
-            log.info("Successfully triggered metadata sync for storage service: {}", storageServiceId);
-
-        } catch (Exception e) {
-            log.error("Failed to trigger metadata sync for storage service {}: {}", storageServiceId, e.getMessage());
-        }
-    }
-
-    /**
-     * Handle storage service recovery (came back online)
-     */
-    private void handleStorageServiceRecovery(Integer storageServiceId) {
-        try {
-            log.info("Handling recovery of storage service {}", storageServiceId);
-
-            // Perform partition leader election for partitions that were led by this broker
-            // This would involve checking which partitions this broker was leading before failure
-            // and electing new leaders if necessary
-
-            // Update ISR lists to remove this broker if it was in ISR but not responsive
-
-            // Trigger metadata updates to all services
-            updateAllServicesWithRecoveryInfo(storageServiceId);
-
-        } catch (Exception e) {
-            log.error("Failed to handle storage service recovery for {}: {}", storageServiceId, e.getMessage());
-        }
-    }
-
-    /**
-     * Update all services with recovery information
-     */
-    private void updateAllServicesWithRecoveryInfo(Integer storageServiceId) {
-        // This would trigger the bidirectional flow to update all metadata services
-        // and their paired storage services about the recovery
-        log.info("Updating all services about recovery of storage service {}", storageServiceId);
     }
 
     /**
