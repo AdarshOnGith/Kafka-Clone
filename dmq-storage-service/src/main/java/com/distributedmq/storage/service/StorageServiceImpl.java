@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -32,10 +33,33 @@ public class StorageServiceImpl implements StorageService {
     // Map of topic-partition to WAL
     private final Map<String, WriteAheadLog> partitionLogs = new ConcurrentHashMap<>();
     
+    // Track pending replication for HWM advancement (for acks=0 and acks=1)
+    // topic-partition -> pending offset that needs ISR confirmation for HWM
+    private final Map<String, Long> pendingHWMUpdates = new ConcurrentHashMap<>();
+    
     private final ReplicationManager replicationManager;
     private final StorageConfig config;
     private final MetadataStore metadataStore;
 
+    /**
+     * Append messages to partition log with replication behavior based on acks:
+     * 
+     * REPLICATION BEHAVIOR (All ack types):
+     * - Leader ALWAYS sends replication requests to ALL ISR followers asynchronously
+     * - Only ISR (In-Sync Replicas) members receive replication requests
+     * - Followers NOT in ISR are excluded from replication
+     * 
+     * RESPONSE TIMING (Producer acknowledgment):
+     * - acks=0: Returns immediately after receiving request (before leader write)
+     * - acks=1: Returns after leader write completes (doesn't wait for followers)
+     * - acks=-1: Returns ONLY after min.insync.replicas acknowledge
+     * 
+     * HIGH WATERMARK UPDATES:
+     * - HWM is advanced ONLY when min.insync.replicas successfully replicate
+     * - For acks=0 and acks=1: HWM updated asynchronously after followers acknowledge
+     * - For acks=-1: HWM updated synchronously before responding to producer
+     * - Consumers can only read up to HWM (committed messages)
+     */
     @Override
     public ProduceResponse appendMessages(ProduceRequest request) {
         String topicPartition = getTopicPartitionKey(request.getTopic(), request.getPartition());
@@ -313,6 +337,20 @@ public class StorageServiceImpl implements StorageService {
     }
     
     /**
+     * Update HWM asynchronously after successful replication to min.insync.replicas
+     * This is called from async replication tasks for acks=0 and acks=1
+     */
+    private void updateHighWaterMarkAsync(String topicPartition, WriteAheadLog wal) {
+        try {
+            long currentLeo = wal.getLogEndOffset();
+            wal.updateHighWaterMark(currentLeo);
+            log.debug("Async HWM update: {} advanced to {}", topicPartition, currentLeo);
+        } catch (Exception e) {
+            log.error("Failed to update HWM asynchronously for {}: {}", topicPartition, e.getMessage());
+        }
+    }
+    
+    /**
      * Validate produce request parameters
      */
     private ProduceResponse.ErrorCode validateProduceRequest(ProduceRequest request) {
@@ -382,6 +420,7 @@ public class StorageServiceImpl implements StorageService {
     
     /**
      * Handle acks=0: No acknowledgment required, just append to leader
+     * But still replicate asynchronously to ISR followers (fire-and-forget)
      */
     private ProduceResponse handleAcksNone(ProduceRequest request, WriteAheadLog wal) {
         List<ProduceResponse.ProduceResult> results = new ArrayList<>();
@@ -415,6 +454,33 @@ public class StorageServiceImpl implements StorageService {
             }
         }
         
+        // Replicate asynchronously to ISR followers (fire-and-forget)
+        // Background task will update HWM when min.insync.replicas acknowledge
+        long finalBaseOffset = baseOffset;
+        String topicPartition = getTopicPartitionKey(request.getTopic(), request.getPartition());
+        CompletableFuture.runAsync(() -> {
+            try {
+                boolean replicationSuccess = replicationManager.replicateBatch(
+                    request.getTopic(),
+                    request.getPartition(),
+                    request.getMessages(),
+                    finalBaseOffset,
+                    StorageConfig.ACKS_NONE
+                );
+                log.debug("Async replication initiated for {}-{} at offset {} (acks=0), success: {}",
+                         request.getTopic(), request.getPartition(), finalBaseOffset, replicationSuccess);
+                
+                // Update HWM if min.insync.replicas acknowledged
+                if (replicationSuccess) {
+                    updateHighWaterMarkAsync(topicPartition, wal);
+                }
+            } catch (Exception e) {
+                log.warn("Async replication failed for {}-{}: {}",
+                        request.getTopic(), request.getPartition(), e.getMessage());
+            }
+        });
+        
+        // Return immediately without waiting for replication
         return ProduceResponse.builder()
                 .topic(request.getTopic())
                 .partition(request.getPartition())
@@ -426,6 +492,7 @@ public class StorageServiceImpl implements StorageService {
     
     /**
      * Handle acks=1: Wait for leader acknowledgment only
+     * But still replicate asynchronously to ISR followers (fire-and-forget)
      */
     private ProduceResponse handleAcksLeader(ProduceRequest request, WriteAheadLog wal) {
         List<ProduceResponse.ProduceResult> results = new ArrayList<>();
@@ -459,8 +526,33 @@ public class StorageServiceImpl implements StorageService {
             }
         }
         
-        // For acks=1, we acknowledge immediately after leader append
-        // No replication required
+        // Replicate asynchronously to ISR followers (fire-and-forget)
+        // Background task will update HWM when min.insync.replicas acknowledge
+        long finalBaseOffset = baseOffset;
+        String topicPartition = getTopicPartitionKey(request.getTopic(), request.getPartition());
+        CompletableFuture.runAsync(() -> {
+            try {
+                boolean replicationSuccess = replicationManager.replicateBatch(
+                    request.getTopic(),
+                    request.getPartition(),
+                    request.getMessages(),
+                    finalBaseOffset,
+                    StorageConfig.ACKS_LEADER
+                );
+                log.debug("Async replication initiated for {}-{} at offset {} (acks=1), success: {}",
+                         request.getTopic(), request.getPartition(), finalBaseOffset, replicationSuccess);
+                
+                // Update HWM if min.insync.replicas acknowledged
+                if (replicationSuccess) {
+                    updateHighWaterMarkAsync(topicPartition, wal);
+                }
+            } catch (Exception e) {
+                log.warn("Async replication failed for {}-{}: {}",
+                        request.getTopic(), request.getPartition(), e.getMessage());
+            }
+        });
+        
+        // Return immediately after leader write without waiting for replication
         return ProduceResponse.builder()
                 .topic(request.getTopic())
                 .partition(request.getPartition())
