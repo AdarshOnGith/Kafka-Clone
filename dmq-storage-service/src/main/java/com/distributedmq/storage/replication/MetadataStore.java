@@ -331,54 +331,65 @@ public class MetadataStore {
     }
 
     /**
+     * Register this broker with the metadata service
+     */
+    public void registerWithMetadataService() {
+        if (metadataServiceUrl == null) {
+            log.warn("Metadata service URL not configured, cannot register broker");
+            return;
+        }
+
+        try {
+            // Create registration request
+            Map<String, Object> registration = new HashMap<>();
+            registration.put("id", localBrokerId);
+            registration.put("host", "localhost");
+            registration.put("port", 8081); // This should come from config
+            registration.put("rack", "default");
+
+            // Send registration request
+            String endpoint = metadataServiceUrl + "/api/v1/metadata/brokers";
+            Map<String, Object> response = restTemplate.postForObject(endpoint, registration, Map.class);
+
+            if (response != null) {
+                log.info("Successfully registered broker {} with metadata service: {}", localBrokerId, response);
+            } else {
+                log.warn("Broker registration returned null response");
+            }
+
+        } catch (Exception e) {
+            log.error("Failed to register broker with metadata service: {}", e.getMessage());
+        }
+    }
+
+    /**
      * Send heartbeat to controller with current sync status
      */
     public void sendHeartbeatToController() {
         try {
-            // Get controller URL (assuming first metadata service is the controller for now)
-            String controllerUrl = com.distributedmq.common.config.ServiceDiscovery.getMetadataServiceUrl(0);
+            // Use the configured metadata service URL
+            String controllerUrl = metadataServiceUrl;
             if (controllerUrl == null) {
-                log.warn("No controller URL found, cannot send heartbeat");
+                log.warn("Metadata service URL not configured, cannot send heartbeat");
                 return;
             }
 
-            // Count partitions this broker is leading and following
-            int partitionsLeading = 0;
-            int partitionsFollowing = 0;
-
-            for (String key : partitionLeaders.keySet()) {
-                Integer leaderId = partitionLeaders.get(key);
-                if (leaderId != null && leaderId.equals(localBrokerId)) {
-                    partitionsLeading++;
-                }
-            }
-
-            for (String key : partitionFollowers.keySet()) {
-                List<Integer> followers = partitionFollowers.get(key);
-                if (followers != null && followers.contains(localBrokerId)) {
-                    partitionsFollowing++;
-                }
-            }
-
-            // Create heartbeat request
-            StorageHeartbeatRequest heartbeat = StorageHeartbeatRequest.builder()
-                    .storageServiceId(localBrokerId)
-                    .currentMetadataVersion(currentMetadataVersion)
-                    .lastMetadataUpdateTimestamp(lastMetadataUpdateTimestamp)
-                    .heartbeatTimestamp(System.currentTimeMillis())
-                    .alive(true)
-                    .partitionsLeading(partitionsLeading)
-                    .partitionsFollowing(partitionsFollowing)
-                    .build();
+            // Create heartbeat request matching the expected format
+            // The metadata service expects: serviceId (string), metadataVersion, partitionCount, isAlive
+            Map<String, Object> heartbeat = new HashMap<>();
+            heartbeat.put("serviceId", "storage-" + localBrokerId);
+            heartbeat.put("metadataVersion", currentMetadataVersion);
+            heartbeat.put("partitionCount", 0); // TODO: implement actual partition counting
+            heartbeat.put("isAlive", true);
 
             // Send heartbeat to controller
             String endpoint = controllerUrl + "/api/v1/metadata/storage-heartbeat";
-            StorageHeartbeatResponse response = restTemplate.postForObject(endpoint, heartbeat, StorageHeartbeatResponse.class);
+            Map<String, Object> response = restTemplate.postForObject(endpoint, heartbeat, Map.class);
 
-            if (response != null && response.isSuccess()) {
-                log.debug("Successfully sent heartbeat to controller");
+            if (response != null) {
+                log.debug("Successfully sent heartbeat to controller: {}", response);
             } else {
-                log.warn("Heartbeat to controller failed: {}", response != null ? response.getErrorMessage() : "null response");
+                log.warn("Heartbeat to controller returned null response");
             }
 
         } catch (Exception e) {

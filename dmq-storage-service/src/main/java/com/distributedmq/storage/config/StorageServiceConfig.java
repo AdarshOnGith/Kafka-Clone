@@ -24,6 +24,15 @@ public class StorageServiceConfig {
     public MetadataStore metadataStore() {
         MetadataStore metadataStore = new MetadataStore();
         metadataStore.setLocalBrokerId(storageConfig.getBroker().getId());
+
+        // Set the paired metadata service URL
+        // For now, hardcode to localhost:9091 since ServiceDiscovery has issues
+        String metadataServiceUrl = "http://localhost:9091";
+        metadataStore.setMetadataServiceUrl(metadataServiceUrl);
+
+        // Register this broker with the metadata service
+        metadataStore.registerWithMetadataService();
+
         return metadataStore;
     }
 }

@@ -14,7 +14,11 @@ import java.util.Map;
 @Slf4j
 public class ServiceDiscovery {
 
-    private static final String CONFIG_FILE_PATH = "config/services.json";
+    private static final String[] CONFIG_FILE_PATHS = {
+        "config/services.json",           // From project root
+        "../config/services.json",        // From service subdirectories
+        "src/main/resources/services.json" // From classpath
+    };
     private static ServiceConfig config;
 
     static {
@@ -22,15 +26,26 @@ public class ServiceDiscovery {
     }
 
     public static void loadConfig() {
-        try {
-            ObjectMapper mapper = new ObjectMapper();
-            config = mapper.readValue(new File(CONFIG_FILE_PATH), ServiceConfig.class);
-            log.info("Loaded service configuration from {}", CONFIG_FILE_PATH);
-        } catch (IOException e) {
-            log.error("Failed to load service configuration: {}", e.getMessage());
-            // Create default config if file doesn't exist
-            config = createDefaultConfig();
+        ObjectMapper mapper = new ObjectMapper();
+
+        for (String configPath : CONFIG_FILE_PATHS) {
+            try {
+                File configFile = new File(configPath);
+                log.info("Trying to load config from: {} (exists: {}, absolute: {})",
+                        configPath, configFile.exists(), configFile.getAbsolutePath());
+                if (configFile.exists()) {
+                    config = mapper.readValue(configFile, ServiceConfig.class);
+                    log.info("Loaded service configuration from {}", configFile.getAbsolutePath());
+                    return;
+                }
+            } catch (IOException e) {
+                log.debug("Failed to load config from {}: {}", configPath, e.getMessage());
+            }
         }
+
+        log.warn("Could not load service configuration from any known path, using defaults");
+        // Create default config if file doesn't exist
+        config = createDefaultConfig();
     }
 
     private static ServiceConfig createDefaultConfig() {
@@ -38,22 +53,22 @@ public class ServiceDiscovery {
 
         // Default metadata services
         ServiceInfo ms1 = new ServiceInfo();
-        ms1.setId(0);
+        ms1.setId(1);
         ms1.setHost("localhost");
-        ms1.setPort(8080);
-        ms1.setUrl("http://localhost:8080");
+        ms1.setPort(9091);
+        ms1.setUrl("http://localhost:9091");
 
         ServiceInfo ms2 = new ServiceInfo();
-        ms2.setId(1);
+        ms2.setId(2);
         ms2.setHost("localhost");
-        ms2.setPort(8081);
-        ms2.setUrl("http://localhost:8081");
+        ms2.setPort(9092);
+        ms2.setUrl("http://localhost:9092");
 
         ServiceInfo ms3 = new ServiceInfo();
-        ms3.setId(2);
+        ms3.setId(3);
         ms3.setHost("localhost");
-        ms3.setPort(8082);
-        ms3.setUrl("http://localhost:8082");
+        ms3.setPort(9093);
+        ms3.setUrl("http://localhost:9093");
 
         defaultConfig.getServices().getMetadataServices().add(ms1);
         defaultConfig.getServices().getMetadataServices().add(ms2);
@@ -61,25 +76,25 @@ public class ServiceDiscovery {
 
         // Default storage services
         StorageServiceInfo ss1 = new StorageServiceInfo();
-        ss1.setId(100);
+        ss1.setId(101);
         ss1.setHost("localhost");
-        ss1.setPort(9090);
-        ss1.setUrl("http://localhost:9090");
-        ss1.setPairedMetadataServiceId(0);
+        ss1.setPort(8081);
+        ss1.setUrl("http://localhost:8081");
+        ss1.setPairedMetadataServiceId(1);
 
         StorageServiceInfo ss2 = new StorageServiceInfo();
-        ss2.setId(101);
+        ss2.setId(102);
         ss2.setHost("localhost");
-        ss2.setPort(9091);
-        ss2.setUrl("http://localhost:9091");
-        ss2.setPairedMetadataServiceId(1);
+        ss2.setPort(8082);
+        ss2.setUrl("http://localhost:8082");
+        ss2.setPairedMetadataServiceId(2);
 
         StorageServiceInfo ss3 = new StorageServiceInfo();
-        ss3.setId(102);
+        ss3.setId(103);
         ss3.setHost("localhost");
-        ss3.setPort(9092);
-        ss3.setUrl("http://localhost:9092");
-        ss3.setPairedMetadataServiceId(2);
+        ss3.setPort(8083);
+        ss3.setUrl("http://localhost:8083");
+        ss3.setPairedMetadataServiceId(3);
 
         defaultConfig.getServices().getStorageServices().add(ss1);
         defaultConfig.getServices().getStorageServices().add(ss2);
