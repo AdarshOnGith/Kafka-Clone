@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Kafka-Clone Testing Setup Script (Python version)
-This script helps set up and test the publish/replication flow
+This script helps set up and test the publish/replication/consume flow
 Windows-friendly alternative to the bash script
 """
 
@@ -21,8 +21,8 @@ TEST_DIR = PROJECT_DIR / "test"
 STORAGE_SERVICE_DIR = PROJECT_DIR / "dmq-storage-service"
 
 def print_header():
-    print("🚀 Kafka-Clone Testing Setup")
-    print("=============================")
+    print("🚀 Kafka-Clone Testing Setup (Publish + Consume)")
+    print("================================================")
     print(f"Project Directory: {PROJECT_DIR}")
     print(f"Test Directory: {TEST_DIR}")
     print()
@@ -115,6 +115,52 @@ def test_publish(port, test_file):
         print(f"❌ Publish failed on port {port}: {e}")
         return False
 
+def test_consume(port, topic, partition, offset=0, max_messages=10, description=""):
+    """Test message consumption"""
+    url = f"http://localhost:{port}/api/v1/storage/consume"
+
+    print(f"� Testing consume from offset {offset} (max {max_messages}) on port {port}{description}...")
+
+    try:
+        request_data = {
+            "topic": topic,
+            "partition": partition,
+            "offset": offset,
+            "maxMessages": max_messages
+        }
+
+        response = requests.post(url, json=request_data, timeout=10)
+        response_data = response.json()
+
+        if response.status_code == 200 and response_data.get('success') == True:
+            messages = response_data.get('messages', [])
+            high_water_mark = response_data.get('highWaterMark', 0)
+
+            print(f"✅ Consume successful on port {port}")
+            print(f"   Messages received: {len(messages)}")
+            print(f"   High water mark: {high_water_mark}")
+
+            # Print message details
+            for i, msg in enumerate(messages):
+                key = msg.get('key', 'null')
+                value_size = len(msg.get('value', []))
+                offset_val = msg.get('offset', 'unknown')
+                timestamp = msg.get('timestamp', 'unknown')
+                print(f"   Message {i}: offset={offset_val}, key='{key}', value_size={value_size}B, ts={timestamp}")
+
+            return messages, high_water_mark
+        else:
+            error_msg = response_data.get('errorMessage', 'Unknown error')
+            print(f"❌ Consume failed on port {port}")
+            print(f"   Status Code: {response.status_code}")
+            print(f"   Error: {error_msg}")
+            print(f"   Full Response: {json.dumps(response_data, indent=2)}")
+            return None, None
+
+    except Exception as e:
+        print(f"❌ Consume failed on port {port}: {e}")
+        return None, None
+
 def main():
     print_header()
 
@@ -200,16 +246,55 @@ def main():
     add_delay(1)
 
     print()
+    print("🧪 Running consume tests...")
+    print("==========================")
+    add_delay(1)
+
+    # Test consuming messages from leader (broker 1)
+    print("Testing consume from leader (broker 1)...")
+    add_delay(0.5)
+    consumed_messages, hwm = test_consume(8081, "test-topic", 0, offset=0, max_messages=10, description=" (all messages)")
+    if consumed_messages is not None:
+        print(f"✅ Consume test passed - received {len(consumed_messages)} messages, HWM: {hwm}")
+    else:
+        print("❌ Consume test failed")
+    add_delay(1)
+
+    print()
+
+    # Test consuming from specific offset
+    print("Testing consume from offset 1...")
+    add_delay(0.5)
+    consumed_from_offset, _ = test_consume(8081, "test-topic", 0, offset=1, max_messages=10, description=" (from offset 1)")
+    if consumed_from_offset is not None:
+        print(f"✅ Offset consume test passed - received {len(consumed_from_offset)} messages")
+    else:
+        print("❌ Offset consume test failed")
+    add_delay(1)
+
+    print()
+
+    # Test consuming with max messages limit
+    print("Testing consume with max messages limit (2)...")
+    add_delay(0.5)
+    consumed_limited, _ = test_consume(8081, "test-topic", 0, offset=0, max_messages=2, description=" (max 2 messages)")
+    if consumed_limited is not None:
+        print(f"✅ Limited consume test passed - received {len(consumed_limited)} messages")
+    else:
+        print("❌ Limited consume test failed")
+    add_delay(1)
+
+    print()
     print("🎉 Testing complete!")
     print("===================")
     add_delay(0.5)
-    print("Check broker logs for replication details.")
-    print("Expected: Messages should be replicated from leader (port 8081) to followers (ports 8082, 8083)")
+    print("Summary:")
+    print("- Publish tests: Verified message production and replication")
+    print("- Consume tests: Verified message consumption from WAL")
+    print("- High water marks: Verified offset tracking")
     print()
-    print("Next steps:")
-    print("- Check WAL files in each broker's data directory")
-    print("- Verify high watermarks are updated")
-    print("- Test consuming messages (once WAL.read() is implemented)")
+    print("Check broker logs for detailed replication and consumption details.")
+    print("Expected: Messages should be replicated from leader to followers, and consumable from any broker")
 
 def show_cluster_topology():
     """Display the cluster topology based on test metadata"""

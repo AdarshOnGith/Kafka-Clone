@@ -41,6 +41,11 @@ public interface StorageService {
      */
     Long getLogEndOffset(String topic, Integer partition);
 
-    // TODO: Add replication methods
+    /**
+     * Append messages for replication (used by followers)
+     * Bypasses leadership check since messages come from leader
+     */
+    ProduceResponse replicateMessages(ProduceRequest request);
+
     // TODO: Add partition creation/deletion methods
 }

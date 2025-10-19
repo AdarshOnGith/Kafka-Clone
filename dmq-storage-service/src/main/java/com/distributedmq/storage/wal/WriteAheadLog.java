@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -18,7 +19,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * Provides durable message storage with segment-based files
  */
 @Slf4j
-public class WriteAheadLog {
+public class WriteAheadLog implements AutoCloseable {
 
     private final String topic;
     private final Integer partition;
@@ -151,18 +152,91 @@ public class WriteAheadLog {
         List<Message> messages = new ArrayList<>();
         
         try {
-            // TODO: Implement reading from segments
-            // 1. Find correct segment
-            // 2. Read messages
-            // 3. Deserialize
+            // For now, read from the current segment only
+            // TODO: Implement multi-segment reading
+            if (currentSegment != null) {
+                List<Message> segmentMessages = currentSegment.readFromOffset(startOffset, maxMessages);
+                
+                // Filter messages that are within bounds (after startOffset and before highWaterMark)
+                for (Message message : segmentMessages) {
+                    if (message.getOffset() >= startOffset && message.getOffset() < highWaterMark.get()) {
+                        messages.add(message);
+                        if (messages.size() >= maxMessages) {
+                            break;
+                        }
+                    }
+                }
+            }
             
-            log.debug("Reading {} messages from offset {}", maxMessages, startOffset);
+            log.debug("Read {} messages starting from offset {}", messages.size(), startOffset);
             
         } catch (Exception e) {
-            log.error("Failed to read messages", e);
+            log.error("Failed to read messages from offset {}", startOffset, e);
         }
         
         return messages;
+    }
+
+    /**
+     * Find all log segments for this partition
+     */
+    private List<LogSegment> findSegmentsForPartition() throws IOException {
+        List<LogSegment> segments = new ArrayList<>();
+        
+        // Check if log directory exists
+        if (!Files.exists(logDirectory)) {
+            return segments;
+        }
+        
+        // Find all .log files in the partition directory
+        File[] segmentFiles = logDirectory.toFile().listFiles((dir, name) -> 
+            name.endsWith(StorageConfig.LOG_FILE_EXTENSION));
+        
+        if (segmentFiles != null) {
+            for (File segmentFile : segmentFiles) {
+                String fileName = segmentFile.getName();
+                String baseOffsetStr = fileName.substring(0, fileName.length() - StorageConfig.LOG_FILE_EXTENSION.length());
+                try {
+                    long baseOffset = Long.parseLong(baseOffsetStr);
+                    segments.add(new LogSegment(logDirectory, baseOffset));
+                } catch (NumberFormatException e) {
+                    log.warn("Invalid segment file name: {}", fileName);
+                }
+            }
+        }
+        
+        return segments;
+    }
+
+    /**
+     * Find the segment that contains the given offset
+     */
+    private LogSegment findSegmentContainingOffset(List<LogSegment> segments, long offset) {
+        if (segments.isEmpty()) {
+            return null;
+        }
+        
+        // Segments are sorted by base offset
+        for (int i = segments.size() - 1; i >= 0; i--) {
+            LogSegment segment = segments.get(i);
+            long baseOffset = segment.getBaseOffset();
+            
+            // Check if this segment could contain the offset
+            if (baseOffset <= offset) {
+                // For the last segment, it can contain any offset >= baseOffset
+                if (i == segments.size() - 1) {
+                    return segment;
+                }
+                
+                // For other segments, check if offset is before next segment's base offset
+                long nextBaseOffset = segments.get(i + 1).getBaseOffset();
+                if (offset < nextBaseOffset) {
+                    return segment;
+                }
+            }
+        }
+        
+        return null;
     }
 
     /**
@@ -205,6 +279,16 @@ public class WriteAheadLog {
 
     public void updateLogEndOffset(long offset) {
         logEndOffset.set(offset);
+    }
+
+    /**
+     * Close the WAL and release resources
+     */
+    @Override
+    public void close() throws IOException {
+        if (currentSegment != null) {
+            currentSegment.close();
+        }
     }
 
     // TODO: Add segment cleanup based on retention policy
