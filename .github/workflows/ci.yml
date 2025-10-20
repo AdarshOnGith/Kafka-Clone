@@ -31,7 +31,8 @@ jobs:
       continue-on-error: true  # don't fail early while testing this step
 
     - name: 📤 Upload test reports
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
+
       with:
         name: test-reports
         path: '**/target/surefire-reports/'
