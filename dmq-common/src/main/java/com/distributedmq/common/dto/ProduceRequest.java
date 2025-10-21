@@ -27,6 +27,9 @@ public class ProduceRequest {
     private Integer requiredAcks; // 0, 1, or -1 (all)
     private Long timeoutMs;
 
+    // Leader HWM for lag calculation (sent by leader during replication)
+    private Long leaderHighWaterMark;
+
     // TODO: Add transactional support
     // TODO: Add compression type
     

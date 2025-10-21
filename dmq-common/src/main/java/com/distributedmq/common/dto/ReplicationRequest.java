@@ -22,6 +22,9 @@ public class ReplicationRequest {
     private Integer leaderId; // Leader broker ID
     private Long leaderEpoch; // Leader epoch for validation
 
+    // Leader's current high water mark for lag calculation
+    private Long leaderHighWaterMark;
+
     // Replication metadata
     private Long timeoutMs;
     private Integer requiredAcks; // Usually 1 for replication (leader ack)

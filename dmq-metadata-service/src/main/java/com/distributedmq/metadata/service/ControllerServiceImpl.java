@@ -28,6 +28,9 @@ public class ControllerServiceImpl implements ControllerService {
     // Heartbeat tracking
     private final ConcurrentMap<Integer, Long> lastHeartbeat = new ConcurrentHashMap<>();
 
+    // Partition metadata storage (topic -> partitionId -> PartitionMetadata)
+    private final ConcurrentMap<String, ConcurrentMap<Integer, PartitionMetadata>> partitionRegistry = new ConcurrentHashMap<>();
+
     private final MetadataPushService metadataPushService;
 
     @PostConstruct
@@ -55,35 +58,53 @@ public class ControllerServiceImpl implements ControllerService {
 
     @Override
     public List<PartitionMetadata> assignPartitions(String topicName, int partitionCount, int replicationFactor) {
-        log.info("Assigning {} partitions with replication factor {} for topic: {}", 
+        log.info("Assigning {} partitions with replication factor {} for topic: {}",
                 partitionCount, replicationFactor, topicName);
-        
-        List<BrokerNode> activeBrokers = getActiveBrokers();
-        
-        if (activeBrokers.size() < replicationFactor) {
-            throw new IllegalStateException(
-                String.format("Not enough brokers for replication factor %d. Available: %d", 
-                    replicationFactor, activeBrokers.size()));
+
+        // Get available storage nodes instead of all brokers
+        List<com.distributedmq.common.config.ServiceDiscovery.StorageServiceInfo> storageServices =
+            com.distributedmq.common.config.ServiceDiscovery.getAllStorageServices();
+
+        if (storageServices.isEmpty()) {
+            throw new IllegalStateException("No storage services available for partition assignment");
         }
-        
+
+        if (storageServices.size() < replicationFactor) {
+            throw new IllegalStateException(
+                String.format("Not enough storage services for replication factor %d. Available: %d",
+                    replicationFactor, storageServices.size()));
+        }
+
         List<PartitionMetadata> partitions = new ArrayList<>();
-        
+
         for (int partitionId = 0; partitionId < partitionCount; partitionId++) {
-            // Simple round-robin assignment
-            int leaderIndex = partitionId % activeBrokers.size();
-            BrokerNode leader = activeBrokers.get(leaderIndex);
-            
-            // Create replica list (leader + next brokers)
+            // Round-robin assignment across available storage nodes
+            int startIndex = partitionId % storageServices.size();
+
+            // Select replicas based on replication factor
             List<BrokerNode> replicas = new ArrayList<>();
-            List<BrokerNode> isr = new ArrayList<>();
-            
-            for (int i = 0; i < replicationFactor && i < activeBrokers.size(); i++) {
-                int replicaIndex = (leaderIndex + i) % activeBrokers.size();
-                BrokerNode replica = activeBrokers.get(replicaIndex);
-                replicas.add(replica);
-                isr.add(replica); // Initially all replicas are in ISR
+            for (int i = 0; i < replicationFactor; i++) {
+                int storageIndex = (startIndex + i) % storageServices.size();
+                com.distributedmq.common.config.ServiceDiscovery.StorageServiceInfo storageService =
+                    storageServices.get(storageIndex);
+
+                // Create broker node from storage service info
+                BrokerNode brokerNode = BrokerNode.builder()
+                        .brokerId(storageService.getId())
+                        .host(storageService.getHost())
+                        .port(storageService.getPort())
+                        .status(BrokerStatus.ONLINE)
+                        .build();
+
+                replicas.add(brokerNode);
             }
-            
+
+            // Assign first replica as leader
+            BrokerNode leader = replicas.get(0);
+
+            // Initially all replicas are in ISR
+            List<BrokerNode> isr = new ArrayList<>(replicas);
+
             PartitionMetadata partition = PartitionMetadata.builder()
                     .topicName(topicName)
                     .partitionId(partitionId)
@@ -93,11 +114,16 @@ public class ControllerServiceImpl implements ControllerService {
                     .startOffset(0L)
                     .endOffset(0L)
                     .build();
-            
+
             partitions.add(partition);
+
+            // Store in partition registry
+            partitionRegistry.computeIfAbsent(topicName, k -> new ConcurrentHashMap<>())
+                    .put(partitionId, partition);
         }
-        
-        log.info("Successfully assigned {} partitions for topic: {}", partitions.size(), topicName);
+
+        log.info("Successfully assigned {} partitions for topic: {} using {} storage services",
+                partitions.size(), topicName, storageServices.size());
         return partitions;
     }
 
@@ -221,15 +247,186 @@ public class ControllerServiceImpl implements ControllerService {
         log.info("Updating partition leadership for {}-{}: leader={}, followers={}, isr={}",
                 topicName, partitionId, leaderId, followers, isr);
 
-        // This is a notification that partition leadership has changed
-        // In a real implementation, this would update the controller's view of partition leadership
-        // For now, we just log it and could trigger rebalancing if needed
+        // Get or create partition metadata
+        ConcurrentMap<Integer, PartitionMetadata> topicPartitions = partitionRegistry.computeIfAbsent(topicName, k -> new ConcurrentHashMap<>());
+        PartitionMetadata partition = topicPartitions.get(partitionId);
 
-        // TODO: Update internal partition leadership tracking
-        // TODO: Validate the leadership change
-        // TODO: Trigger ISR updates if needed
-        // TODO: Notify other components about the change
+        if (partition == null) {
+            // Create new partition metadata if it doesn't exist
+            partition = PartitionMetadata.builder()
+                    .topicName(topicName)
+                    .partitionId(partitionId)
+                    .startOffset(0L)
+                    .endOffset(0L)
+                    .build();
+        }
+
+        // Update leader
+        if (leaderId != null) {
+            BrokerNode leader = brokerRegistry.get(leaderId);
+            if (leader != null) {
+                partition.setLeader(leader);
+            }
+        }
+
+        // Update replicas and ISR from the provided lists
+        if (followers != null && isr != null) {
+            List<BrokerNode> replicas = new ArrayList<>();
+            List<BrokerNode> isrNodes = new ArrayList<>();
+
+            // Add leader to replicas if not already included
+            if (leaderId != null && !followers.contains(leaderId)) {
+                followers = new ArrayList<>(followers);
+                followers.add(0, leaderId); // Leader should be first
+            }
+
+            // Convert broker IDs to BrokerNode objects
+            for (Integer brokerId : followers) {
+                BrokerNode broker = brokerRegistry.get(brokerId);
+                if (broker != null) {
+                    replicas.add(broker);
+                }
+            }
+
+            for (Integer brokerId : isr) {
+                BrokerNode broker = brokerRegistry.get(brokerId);
+                if (broker != null) {
+                    isrNodes.add(broker);
+                }
+            }
+
+            partition.setReplicas(replicas);
+            partition.setIsr(isrNodes);
+        }
+
+        // Store updated partition
+        topicPartitions.put(partitionId, partition);
 
         log.info("Partition leadership update processed for {}-{}", topicName, partitionId);
+    }
+
+    @Override
+    public void removeFromISR(String topicName, int partitionId, Integer brokerId) {
+        log.info("Removing broker {} from ISR for partition {}-{}", brokerId, topicName, partitionId);
+
+        ConcurrentMap<Integer, PartitionMetadata> topicPartitions = partitionRegistry.get(topicName);
+        if (topicPartitions == null) {
+            log.warn("Topic {} not found when removing from ISR", topicName);
+            return;
+        }
+
+        PartitionMetadata partition = topicPartitions.get(partitionId);
+        if (partition == null) {
+            log.warn("Partition {}-{} not found when removing from ISR", topicName, partitionId);
+            return;
+        }
+
+        List<BrokerNode> currentISR = partition.getIsr();
+        if (currentISR != null) {
+            boolean removed = currentISR.removeIf(broker -> broker.getBrokerId().equals(brokerId));
+            if (removed) {
+                log.info("Successfully removed broker {} from ISR for {}-{}", brokerId, topicName, partitionId);
+            } else {
+                log.debug("Broker {} was not in ISR for {}-{}", brokerId, topicName, partitionId);
+            }
+        }
+    }
+
+    @Override
+    public void addToISR(String topicName, int partitionId, Integer brokerId) {
+        log.info("Adding broker {} to ISR for partition {}-{}", brokerId, topicName, partitionId);
+
+        ConcurrentMap<Integer, PartitionMetadata> topicPartitions = partitionRegistry.get(topicName);
+        if (topicPartitions == null) {
+            log.warn("Topic {} not found when adding to ISR", topicName);
+            return;
+        }
+
+        PartitionMetadata partition = topicPartitions.get(partitionId);
+        if (partition == null) {
+            log.warn("Partition {}-{} not found when adding to ISR", topicName, partitionId);
+            return;
+        }
+
+        // Check if broker is in replicas
+        boolean isReplica = partition.getReplicas().stream()
+                .anyMatch(broker -> broker.getBrokerId().equals(brokerId));
+
+        if (!isReplica) {
+            log.warn("Broker {} is not a replica for {}-{}, cannot add to ISR", brokerId, topicName, partitionId);
+            return;
+        }
+
+        List<BrokerNode> currentISR = partition.getIsr();
+        if (currentISR == null) {
+            currentISR = new ArrayList<>();
+            partition.setIsr(currentISR);
+        }
+
+        boolean alreadyInISR = currentISR.stream()
+                .anyMatch(broker -> broker.getBrokerId().equals(brokerId));
+
+        if (!alreadyInISR) {
+            BrokerNode brokerNode = brokerRegistry.get(brokerId);
+            if (brokerNode != null) {
+                currentISR.add(brokerNode);
+                log.info("Successfully added broker {} to ISR for {}-{}", brokerId, topicName, partitionId);
+            } else {
+                log.warn("Broker {} not found in broker registry", brokerId);
+            }
+        } else {
+            log.debug("Broker {} is already in ISR for {}-{}", brokerId, topicName, partitionId);
+        }
+    }
+
+    @Override
+    public List<Integer> getISR(String topicName, int partitionId) {
+        ConcurrentMap<Integer, PartitionMetadata> topicPartitions = partitionRegistry.get(topicName);
+        if (topicPartitions == null) {
+            return new ArrayList<>();
+        }
+
+        PartitionMetadata partition = topicPartitions.get(partitionId);
+        if (partition == null || partition.getIsr() == null) {
+            return new ArrayList<>();
+        }
+
+        return partition.getIsr().stream()
+                .map(BrokerNode::getBrokerId)
+                .collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
+    }
+
+    @Override
+    public Integer getPartitionLeader(String topicName, int partitionId) {
+        ConcurrentMap<Integer, PartitionMetadata> topicPartitions = partitionRegistry.get(topicName);
+        if (topicPartitions == null) {
+            return null;
+        }
+
+        PartitionMetadata partition = topicPartitions.get(partitionId);
+        if (partition == null || partition.getLeader() == null) {
+            return null;
+        }
+
+        return partition.getLeader().getBrokerId();
+    }
+
+    @Override
+    public List<Integer> getPartitionFollowers(String topicName, int partitionId) {
+        ConcurrentMap<Integer, PartitionMetadata> topicPartitions = partitionRegistry.get(topicName);
+        if (topicPartitions == null) {
+            return new ArrayList<>();
+        }
+
+        PartitionMetadata partition = topicPartitions.get(partitionId);
+        if (partition == null || partition.getReplicas() == null) {
+            return new ArrayList<>();
+        }
+
+        Integer leaderId = getPartitionLeader(topicName, partitionId);
+        return partition.getReplicas().stream()
+                .map(BrokerNode::getBrokerId)
+                .filter(id -> !id.equals(leaderId))
+                .collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
     }
 }

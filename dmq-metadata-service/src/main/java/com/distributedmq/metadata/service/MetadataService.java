@@ -90,6 +90,28 @@ public interface MetadataService {
      */
     MetadataUpdateResponse processStorageUpdate(MetadataUpdateRequest storageUpdate);
 
+    /**
+     * Remove a broker from ISR for a specific partition
+     * Called when a follower exceeds lag threshold
+     */
+    void removeFromISR(String topic, Integer partition, Integer brokerId);
+
+    /**
+     * Add a broker to ISR for a specific partition
+     * Called when a follower recovers from lag
+     */
+    void addToISR(String topic, Integer partition, Integer brokerId);
+
+    /**
+     * Get current ISR for a partition
+     */
+    List<Integer> getISR(String topic, Integer partition);
+
+    /**
+     * Check if a broker is in ISR for a partition
+     */
+    boolean isInISR(String topic, Integer partition, Integer brokerId);
+
     // TODO: Add partition management methods
     // TODO: Add consumer group methods
     // TODO: Add offset management methods

@@ -29,6 +29,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+import java.util.ArrayList;
 
 /**
  * Implementation of MetadataService
@@ -1038,5 +1039,99 @@ public class MetadataServiceImpl implements MetadataService {
         }
 
         return null;
+    }
+
+    @Override
+    public void removeFromISR(String topic, Integer partition, Integer brokerId) {
+        log.info("Removing broker {} from ISR for partition {}-{}", brokerId, topic, partition);
+
+        if (raftController.isControllerLeader()) {
+            // Active controller: update via controller service
+            controllerService.removeFromISR(topic, partition, brokerId);
+
+            // Propagate the change to storage services
+            List<Integer> updatedISR = controllerService.getISR(topic, partition);
+            propagateISRUpdateToStorageServices(topic, partition, updatedISR);
+        } else {
+            // Non-active controller: this should not happen as only controller manages ISR
+            log.warn("Non-active controller received removeFromISR request for {}-{}", topic, partition);
+        }
+    }
+
+    @Override
+    public void addToISR(String topic, Integer partition, Integer brokerId) {
+        log.info("Adding broker {} to ISR for partition {}-{}", brokerId, topic, partition);
+
+        if (raftController.isControllerLeader()) {
+            // Active controller: update via controller service
+            controllerService.addToISR(topic, partition, brokerId);
+
+            // Propagate the change to storage services
+            List<Integer> updatedISR = controllerService.getISR(topic, partition);
+            propagateISRUpdateToStorageServices(topic, partition, updatedISR);
+        } else {
+            // Non-active controller: this should not happen as only controller manages ISR
+            log.warn("Non-active controller received addToISR request for {}-{}", topic, partition);
+        }
+    }
+
+    @Override
+    public List<Integer> getISR(String topic, Integer partition) {
+        // Get ISR from controller service (works for both active and non-active controllers)
+        return controllerService.getISR(topic, partition);
+    }
+
+    @Override
+    public boolean isInISR(String topic, Integer partition, Integer brokerId) {
+        List<Integer> isr = getISR(topic, partition);
+        return isr.contains(brokerId);
+    }
+
+    /**
+     * Propagate ISR updates to all storage services
+     */
+    private void propagateISRUpdateToStorageServices(String topicName, int partitionId, List<Integer> isr) {
+        log.info("Propagating ISR update for {}-{} to all storage services", topicName, partitionId);
+
+        // Get partition info from controller service
+        Integer leaderId = controllerService.getPartitionLeader(topicName, partitionId);
+        List<Integer> followerIds = controllerService.getPartitionFollowers(topicName, partitionId);
+
+        // Create partition metadata update
+        MetadataUpdateRequest.PartitionMetadata partitionUpdate =
+                new MetadataUpdateRequest.PartitionMetadata();
+        partitionUpdate.setTopic(topicName);
+        partitionUpdate.setPartition(partitionId);
+        partitionUpdate.setLeaderId(leaderId);
+        partitionUpdate.setFollowerIds(followerIds);
+        partitionUpdate.setIsrIds(isr);
+        partitionUpdate.setLeaderEpoch(System.currentTimeMillis());
+
+        MetadataUpdateRequest updateRequest = MetadataUpdateRequest.builder()
+                .partitions(List.of(partitionUpdate))
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        // Get all storage services from service discovery
+        List<com.distributedmq.common.config.ServiceDiscovery.StorageServiceInfo> storageServices =
+            com.distributedmq.common.config.ServiceDiscovery.getAllStorageServices();
+
+        for (com.distributedmq.common.config.ServiceDiscovery.StorageServiceInfo storageService : storageServices) {
+            try {
+                String serviceUrl = storageService.getUrl();
+                String endpoint = serviceUrl + "/api/v1/storage/metadata";
+
+                log.debug("Propagating ISR update to storage service {}: {}", storageService.getId(), serviceUrl);
+
+                // Send the update
+                restTemplate.postForObject(endpoint, updateRequest, MetadataUpdateResponse.class);
+
+            } catch (Exception e) {
+                log.error("Failed to propagate ISR update to storage service {}: {}",
+                        storageService.getId(), e.getMessage());
+            }
+        }
+
+        log.info("Completed ISR update propagation to storage services");
     }
 }

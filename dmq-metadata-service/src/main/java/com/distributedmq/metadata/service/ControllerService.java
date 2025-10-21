@@ -51,6 +51,30 @@ public interface ControllerService {
      */
     void updatePartitionLeadership(String topicName, int partitionId, Integer leaderId, List<Integer> followers, List<Integer> isr);
 
-    // TODO: Add ISR management
+    /**
+     * Remove broker from ISR for a partition
+     */
+    void removeFromISR(String topicName, int partitionId, Integer brokerId);
+
+    /**
+     * Add broker to ISR for a partition
+     */
+    void addToISR(String topicName, int partitionId, Integer brokerId);
+
+    /**
+     * Get current ISR for a partition
+     */
+    List<Integer> getISR(String topicName, int partitionId);
+
+    /**
+     * Get partition leader
+     */
+    Integer getPartitionLeader(String topicName, int partitionId);
+
+    /**
+     * Get partition followers
+     */
+    List<Integer> getPartitionFollowers(String topicName, int partitionId);
+
     // TODO: Add rebalancing logic
 }

@@ -60,6 +60,10 @@ public class MetadataStore {
         log.info("Local broker ID set to: {}", brokerId);
     }
 
+    public Integer getLocalBrokerId() {
+        return localBrokerId;
+    }
+
     public void setMetadataServiceUrl(String url) {
         this.metadataServiceUrl = url;
         log.info("Metadata service URL set to: {}", url);
@@ -374,26 +378,117 @@ public class MetadataStore {
                 return;
             }
 
-            // Create heartbeat request matching the expected format
-            // The metadata service expects: serviceId (string), metadataVersion, partitionCount, isAlive
-            Map<String, Object> heartbeat = new HashMap<>();
-            heartbeat.put("serviceId", "storage-" + localBrokerId);
-            heartbeat.put("metadataVersion", currentMetadataVersion);
-            heartbeat.put("partitionCount", 0); // TODO: implement actual partition counting
-            heartbeat.put("isAlive", true);
+            // Create heartbeat request using proper DTO
+            StorageHeartbeatRequest heartbeatRequest = StorageHeartbeatRequest.builder()
+                    .storageServiceId(localBrokerId)
+                    .currentMetadataVersion(currentMetadataVersion)
+                    .lastMetadataUpdateTimestamp(lastMetadataUpdateTimestamp)
+                    .heartbeatTimestamp(System.currentTimeMillis())
+                    .alive(true)
+                    .partitionsLeading(0) // TODO: implement actual partition counting
+                    .partitionsFollowing(0) // TODO: implement actual partition counting
+                    .build();
 
-            // Send heartbeat to controller
+            // Send heartbeat to controller and get typed response
             String endpoint = controllerUrl + "/api/v1/metadata/storage-heartbeat";
-            Map<String, Object> response = restTemplate.postForObject(endpoint, heartbeat, Map.class);
+            ResponseEntity<StorageHeartbeatResponse> responseEntity =
+                    restTemplate.postForEntity(endpoint, heartbeatRequest, StorageHeartbeatResponse.class);
 
-            if (response != null) {
-                log.debug("Successfully sent heartbeat to controller: {}", response);
+            if (responseEntity.getStatusCode().is2xxSuccessful()) {
+                StorageHeartbeatResponse response = responseEntity.getBody();
+                if (response != null) {
+                    processHeartbeatResponse(response);
+                    log.debug("Successfully sent heartbeat to controller: success={}, inSync={}, instruction={}",
+                            response.isSuccess(), response.isInSync(), response.getInstruction());
+                } else {
+                    log.warn("Heartbeat response body was null");
+                }
             } else {
-                log.warn("Heartbeat to controller returned null response");
+                log.warn("Heartbeat to controller failed with status: {}", responseEntity.getStatusCode());
             }
 
         } catch (Exception e) {
             log.error("Failed to send heartbeat to controller: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Process heartbeat response from controller
+     */
+    private void processHeartbeatResponse(StorageHeartbeatResponse response) {
+        // Check if heartbeat was successful
+        if (!response.isSuccess()) {
+            log.warn("Heartbeat was not successful: {}", response.getErrorMessage());
+            return;
+        }
+
+        // Check if metadata is out of sync
+        if (!response.isInSync()) {
+            log.info("Metadata is out of sync. Current version: {}, Controller version: {}",
+                    currentMetadataVersion, response.getControllerMetadataVersion());
+
+            // Request metadata refresh
+            requestMetadataRefresh();
+
+            // Update our metadata version to match controller
+            if (response.getControllerMetadataVersion() != null) {
+                this.currentMetadataVersion = response.getControllerMetadataVersion();
+                this.lastMetadataUpdateTimestamp = response.getResponseTimestamp() != null ?
+                        response.getResponseTimestamp() : System.currentTimeMillis();
+            }
+        }
+
+        // Process any instructions from controller
+        if (response.getInstruction() != null && !response.getInstruction().isEmpty()) {
+            processControllerInstruction(response.getInstruction());
+        }
+    }
+
+    /**
+     * Request metadata refresh from metadata service
+     */
+    private void requestMetadataRefresh() {
+        try {
+            if (metadataServiceUrl == null) {
+                log.warn("Metadata service URL not configured, cannot request refresh");
+                return;
+            }
+
+            String endpoint = metadataServiceUrl + "/api/v1/metadata/refresh";
+            Map<String, Object> request = new HashMap<>();
+            request.put("brokerId", localBrokerId);
+            request.put("currentVersion", currentMetadataVersion);
+
+            // Send refresh request
+            Map<String, Object> response = restTemplate.postForObject(endpoint, request, Map.class);
+
+            if (response != null) {
+                log.info("Requested metadata refresh: {}", response);
+            } else {
+                log.warn("Metadata refresh request returned null response");
+            }
+
+        } catch (Exception e) {
+            log.error("Failed to request metadata refresh: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Process instruction from controller
+     */
+    private void processControllerInstruction(String instruction) {
+        log.info("Processing controller instruction: {}", instruction);
+
+        // Parse and handle different instruction types
+        if ("METADATA_OUTDATED".equals(instruction)) {
+            // Already handled in processHeartbeatResponse
+            log.debug("Metadata outdated instruction already processed");
+        } else if (instruction.startsWith("ISR_")) {
+            // ISR-related instructions
+            log.info("Received ISR instruction: {}", instruction);
+            // TODO: Implement ISR instruction processing
+        } else {
+            log.warn("Unknown controller instruction: {}", instruction);
         }
     }
 

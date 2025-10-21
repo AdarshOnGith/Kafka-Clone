@@ -80,38 +80,117 @@ public class WriteAheadLog implements AutoCloseable {
             return;
         }
         
-        // Find the segment with the highest base offset
-        LogSegment latestSegment = null;
-        long maxBaseOffset = -1;
-        
+        // Sort segments by base offset
+        List<LogSegment> segments = new ArrayList<>();
         for (File segmentFile : segmentFiles) {
             String fileName = segmentFile.getName();
             String baseOffsetStr = fileName.substring(0, fileName.length() - StorageConfig.LOG_FILE_EXTENSION.length());
-            long baseOffset = Long.parseLong(baseOffsetStr);
-            
-            if (baseOffset > maxBaseOffset) {
-                maxBaseOffset = baseOffset;
-                latestSegment = new LogSegment(logDirectory, baseOffset);
+            try {
+                long baseOffset = Long.parseLong(baseOffsetStr);
+                segments.add(new LogSegment(logDirectory, baseOffset));
+            } catch (NumberFormatException e) {
+                log.warn("Skipping invalid segment file: {}", fileName);
             }
         }
         
+        // Sort segments by base offset
+        segments.sort(Comparator.comparingLong(LogSegment::getBaseOffset));
+        
+        // Validate all segments for consistency
+        validateSegmentsConsistency(segments);
+        
+        // Find the latest valid segment
+        LogSegment latestSegment = segments.get(segments.size() - 1);
         currentSegment = latestSegment;
         
-        // Recover offsets by reading the last message from the segment
-        long lastOffset = currentSegment.getLastOffset();
-        if (lastOffset >= 0) {
-            long recoveredOffset = lastOffset + 1;
-            nextOffset.set(recoveredOffset);
-            logEndOffset.set(recoveredOffset);
-            highWaterMark.set(Math.min(highWaterMark.get(), recoveredOffset));
-        } else {
-            // Empty segment, start from maxBaseOffset
-            nextOffset.set(maxBaseOffset);
-            logEndOffset.set(maxBaseOffset);
+        // Recover offsets by validating the entire log
+        long recoveredNextOffset = recoverOffsetsFromValidatedSegments(segments);
+        
+        nextOffset.set(recoveredNextOffset);
+        logEndOffset.set(recoveredNextOffset);
+        highWaterMark.set(Math.min(highWaterMark.get(), recoveredNextOffset));
+        
+        log.info("Recovered WAL state: nextOffset={}, logEndOffset={}, highWaterMark={}, segments={}", 
+                nextOffset.get(), logEndOffset.get(), highWaterMark.get(), segments.size());
+    }
+
+    /**
+     * Validate consistency of all log segments
+     */
+    private void validateSegmentsConsistency(List<LogSegment> segments) throws IOException {
+        if (segments.isEmpty()) {
+            return;
         }
         
-        log.info("Recovered WAL state: nextOffset={}, logEndOffset={}, highWaterMark={}", 
-                nextOffset.get(), logEndOffset.get(), highWaterMark.get());
+        long expectedBaseOffset = 0;
+        long previousLastOffset = -1;
+        
+        for (int i = 0; i < segments.size(); i++) {
+            LogSegment segment = segments.get(i);
+            long segmentBaseOffset = segment.getBaseOffset();
+            
+            // Validate base offset continuity
+            if (i == 0) {
+                if (segmentBaseOffset != 0) {
+                    log.warn("First segment base offset is not 0: {}", segmentBaseOffset);
+                }
+            } else {
+                if (segmentBaseOffset != expectedBaseOffset) {
+                    log.error("Segment base offset discontinuity: expected {}, found {}", 
+                             expectedBaseOffset, segmentBaseOffset);
+                    throw new IOException("Inconsistent segment base offsets in WAL recovery");
+                }
+            }
+            
+            // Validate segment content and get last offset
+            long lastOffset = segment.getLastOffset();
+            if (lastOffset >= 0) {
+                // Validate offset continuity within segment
+                if (lastOffset < segmentBaseOffset) {
+                    log.error("Segment last offset {} is less than base offset {}", 
+                             lastOffset, segmentBaseOffset);
+                    throw new IOException("Invalid offset range in segment");
+                }
+                
+                // Validate continuity between segments
+                if (previousLastOffset >= 0 && segmentBaseOffset != (previousLastOffset + 1)) {
+                    log.error("Segment continuity broken: previous last offset {}, current base offset {}", 
+                             previousLastOffset, segmentBaseOffset);
+                    throw new IOException("Broken continuity between segments");
+                }
+                
+                previousLastOffset = lastOffset;
+                expectedBaseOffset = lastOffset + 1;
+            } else {
+                // Empty segment
+                expectedBaseOffset = segmentBaseOffset;
+            }
+            
+            log.debug("Validated segment {}: baseOffset={}, lastOffset={}", 
+                     segmentBaseOffset, segmentBaseOffset, lastOffset);
+        }
+        
+        log.info("Successfully validated {} segments for consistency", segments.size());
+    }
+
+    /**
+     * Recover next offset from validated segments
+     */
+    private long recoverOffsetsFromValidatedSegments(List<LogSegment> segments) throws IOException {
+        if (segments.isEmpty()) {
+            return 0;
+        }
+        
+        // Start from the last segment
+        LogSegment lastSegment = segments.get(segments.size() - 1);
+        long lastOffset = lastSegment.getLastOffset();
+        
+        if (lastOffset >= 0) {
+            return lastOffset + 1;
+        } else {
+            // Empty last segment, use its base offset
+            return lastSegment.getBaseOffset();
+        }
     }
 
     /**
@@ -147,6 +226,8 @@ public class WriteAheadLog implements AutoCloseable {
 
     /**
      * Read messages starting from offset
+     * TODO: Add isolation level support (read_committed vs read_uncommitted)
+     * Currently only supports read_committed (filters by HWM)
      */
     public List<Message> read(long startOffset, int maxMessages) {
         List<Message> messages = new ArrayList<>();

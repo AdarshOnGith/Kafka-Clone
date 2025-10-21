@@ -4,6 +4,7 @@ import com.distributedmq.common.dto.ConsumeRequest;
 import com.distributedmq.common.dto.ConsumeResponse;
 import com.distributedmq.common.dto.ProduceRequest;
 import com.distributedmq.common.dto.ProduceResponse;
+import com.distributedmq.common.dto.PartitionStatus;
 import com.distributedmq.common.model.Message;
 import com.distributedmq.storage.config.StorageConfig;
 import com.distributedmq.storage.replication.MetadataStore;
@@ -36,6 +37,10 @@ public class StorageServiceImpl implements StorageService {
     // Track pending replication for HWM advancement (for acks=0 and acks=1)
     // topic-partition -> pending offset that needs ISR confirmation for HWM
     private final Map<String, Long> pendingHWMUpdates = new ConcurrentHashMap<>();
+    
+    // Track leader HWM per partition (received from replication requests)
+    // topic-partition -> latest leader HWM
+    private final Map<String, Long> leaderHighWaterMarks = new ConcurrentHashMap<>();
     
     private final ReplicationManager replicationManager;
     private final StorageConfig config;
@@ -256,6 +261,12 @@ public class StorageServiceImpl implements StorageService {
 
         log.info("Replicating {} messages to {} (follower)", 
                 request.getMessages().size(), topicPartition);
+        
+        // Store leader HWM for lag calculation
+        if (request.getLeaderHighWaterMark() != null) {
+            leaderHighWaterMarks.put(topicPartition, request.getLeaderHighWaterMark());
+            log.debug("Updated leader HWM for {}: {}", topicPartition, request.getLeaderHighWaterMark());
+        }
         
         // Step 1: Validate request (skip leadership check for replication)
         ProduceResponse.ErrorCode validationError = validateProduceRequest(request);
@@ -614,13 +625,16 @@ public class StorageServiceImpl implements StorageService {
         
         // Step 3: Update High Watermark only if we have enough ISR replicas
         if (replicationResult.getSuccessfulReplicas() >= config.getReplication().getMinInsyncReplicas()) {
-            long currentLeo = wal.getLogEndOffset();
-            wal.updateHighWaterMark(currentLeo);
-            log.debug("Updated High Watermark to {} for topic-partition: {} (ISR replicas: {}/{})", 
-                     currentLeo, getTopicPartitionKey(request.getTopic(), request.getPartition()),
+            // HWM should be the minimum LEO across all ISR replicas
+            // Since we just successfully replicated to all ISR followers, they have caught up
+            // to at least baseOffset + messageCount, so HWM can be set to that value
+            long newHwm = baseOffset + request.getMessages().size();
+            wal.updateHighWaterMark(newHwm);
+            log.debug("Updated High Watermark to {} for topic-partition: {} (ISR replicas: {}/{})",
+                     newHwm, getTopicPartitionKey(request.getTopic(), request.getPartition()),
                      replicationResult.getSuccessfulReplicas(), replicationResult.getTotalReplicas());
         } else {
-            log.warn("Not enough ISR replicas for HWM advancement: {}/{} < minISR={}", 
+            log.warn("Not enough ISR replicas for HWM advancement: {}/{} < minISR={}",
                     replicationResult.getSuccessfulReplicas(), replicationResult.getTotalReplicas(),
                     config.getReplication().getMinInsyncReplicas());
         }
@@ -632,5 +646,101 @@ public class StorageServiceImpl implements StorageService {
                 .success(true)
                 .errorCode(ProduceResponse.ErrorCode.NONE)
                 .build();
+    }
+
+    /**
+     * Collect partition status for all partitions this node manages
+     * Used for controller heartbeat reporting
+     */
+    public List<PartitionStatus> collectPartitionStatus() {
+        List<PartitionStatus> partitionStatuses = new ArrayList<>();
+        long currentTime = System.currentTimeMillis();
+
+        for (Map.Entry<String, WriteAheadLog> entry : partitionLogs.entrySet()) {
+            String topicPartitionKey = entry.getKey();
+            WriteAheadLog wal = entry.getValue();
+
+            // Parse topic and partition from key (format: "topic-partition")
+            String[] parts = topicPartitionKey.split("-", 2);
+            if (parts.length != 2) {
+                log.warn("Invalid topic-partition key format: {}", topicPartitionKey);
+                continue;
+            }
+
+            String topic = parts[0];
+            Integer partition = Integer.parseInt(parts[1]);
+
+            // Determine role
+            PartitionStatus.Role role = metadataStore.isLeaderForPartition(topic, partition) ?
+                    PartitionStatus.Role.LEADER : PartitionStatus.Role.FOLLOWER;
+
+            // Get LEO and HWM
+            Long leo = wal.getLogEndOffset();
+            Long hwm = wal.getHighWaterMark();
+
+            // Calculate lag (only for followers)
+            Long lag = null;
+            if (role == PartitionStatus.Role.FOLLOWER) {
+                lag = calculateLag(topic, partition, leo);
+            }
+
+            PartitionStatus status = PartitionStatus.builder()
+                    .topic(topic)
+                    .partition(partition)
+                    .role(role)
+                    .leo(leo)
+                    .lag(lag)
+                    .hwm(role == PartitionStatus.Role.LEADER ? hwm : null)
+                    .metadataVersion(metadataStore.getCurrentMetadataVersion())
+                    .timestamp(currentTime)
+                    .build();
+
+            partitionStatuses.add(status);
+
+            log.debug("Collected status for {}-{}: role={}, LEO={}, lag={}, HWM={}",
+                    topic, partition, role, leo, lag, hwm);
+        }
+
+        return partitionStatuses;
+    }
+
+    /**
+     * Calculate lag for a follower partition
+     * Lag = leader's HWM - follower's LEO
+     * Leader HWM is received from replication requests
+     */
+    private Long calculateLag(String topic, Integer partition, Long followerLeo) {
+        try {
+            String topicPartitionKey = getTopicPartitionKey(topic, partition);
+            Long leaderHwm = leaderHighWaterMarks.get(topicPartitionKey);
+            
+            if (leaderHwm == null) {
+                log.debug("No leader HWM available for {}-{}, cannot calculate lag", topic, partition);
+                return null; // Unknown lag
+            }
+            
+            if (followerLeo == null) {
+                log.warn("Follower LEO is null for {}-{}", topic, partition);
+                return null;
+            }
+            
+            long lag = leaderHwm - followerLeo;
+            
+            // Lag should not be negative (follower should not be ahead of leader)
+            if (lag < 0) {
+                log.warn("Negative lag detected for {}-{}: leaderHWM={}, followerLEO={}, lag={}",
+                        topic, partition, leaderHwm, followerLeo, lag);
+                lag = 0; // Clamp to 0
+            }
+            
+            log.debug("Calculated lag for {}-{}: leaderHWM={}, followerLEO={}, lag={}",
+                    topic, partition, leaderHwm, followerLeo, lag);
+            
+            return lag;
+            
+        } catch (Exception e) {
+            log.warn("Error calculating lag for {}-{}: {}", topic, partition, e.getMessage());
+            return null; // Unknown lag
+        }
     }
 }

@@ -4,7 +4,11 @@ import com.distributedmq.common.dto.HeartbeatRequest;
 import com.distributedmq.common.dto.HeartbeatResponse;
 import com.distributedmq.common.dto.StorageHeartbeatRequest;
 import com.distributedmq.common.dto.StorageHeartbeatResponse;
-import com.distributedmq.common.dto.MetadataUpdateRequest;
+import com.distributedmq.common.dto.StorageControllerHeartbeatRequest;
+import com.distributedmq.common.dto.StorageControllerHeartbeatResponse;
+import com.distributedmq.common.dto.ISRStatusBatchRequest;
+import com.distributedmq.common.dto.ISRStatusBatchResponse;
+import com.distributedmq.common.dto.ISRStatusUpdate;
 import com.distributedmq.common.dto.MetadataUpdateResponse;
 import com.distributedmq.common.model.TopicMetadata;
 import com.distributedmq.metadata.coordination.RaftController;
@@ -35,6 +39,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.ArrayList;
 
 /**
  * REST Controller for Metadata operations
@@ -609,6 +614,214 @@ public class MetadataController {
             log.error("Error processing storage heartbeat from service {}: {}", request.getServiceId(), e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
+    }
+
+    /**
+     * Receive detailed heartbeat from storage services for ISR management
+     * Contains per-partition status including LEO, lag, HWM, and role information
+     */
+    @PostMapping("/storage-controller-heartbeat")
+    public ResponseEntity<StorageControllerHeartbeatResponse> receiveStorageControllerHeartbeat(
+            @Validated @RequestBody StorageControllerHeartbeatRequest request) {
+
+        log.debug("Received storage controller heartbeat from node: {}", request.getNodeId());
+
+        try {
+            // Validate request
+            if (request.getNodeId() == null || request.getNodeId() < 0) {
+                log.warn("Invalid node ID: {}", request.getNodeId());
+                return ResponseEntity.badRequest().build();
+            }
+
+            // Process partition status for ISR management
+            if (request.getPartitions() != null) {
+                for (com.distributedmq.common.dto.PartitionStatus partition : request.getPartitions()) {
+                    log.debug("Processing partition status: {}-{}, role: {}, LEO: {}, lag: {}, HWM: {}",
+                            partition.getTopic(), partition.getPartition(),
+                            partition.getRole(), partition.getLeo(), partition.getLag(), partition.getHwm());
+
+                    // TODO: Process lag information for ISR management
+                    // TODO: Detect partitions that may need ISR changes
+                    // TODO: Update controller's view of partition leadership
+                }
+            }
+
+            // Update broker status
+            try {
+                metadataService.updateBrokerStatus(request.getNodeId(),
+                        request.isAlive() ? "ONLINE" : "OFFLINE");
+            } catch (IllegalArgumentException e) {
+                // Broker doesn't exist, that's ok for heartbeat
+                log.debug("Heartbeat from unknown broker: {}", request.getNodeId());
+            }
+
+            // Check if storage node has stale metadata
+            Long controllerMetadataVersion = System.currentTimeMillis(); // TODO: Get actual controller metadata version
+            boolean metadataInSync = request.getMetadataVersion() != null &&
+                    request.getMetadataVersion() >= (controllerMetadataVersion - 1000); // 1 second tolerance
+
+            String instruction = null;
+            if (!metadataInSync) {
+                instruction = "METADATA_OUTDATED";
+                log.info("Storage node {} has outdated metadata (version: {}, controller: {})",
+                        request.getNodeId(), request.getMetadataVersion(), controllerMetadataVersion);
+            }
+
+            StorageControllerHeartbeatResponse response = StorageControllerHeartbeatResponse.builder()
+                    .success(true)
+                    .controllerMetadataVersion(controllerMetadataVersion)
+                    .metadataInSync(metadataInSync)
+                    .responseTimestamp(System.currentTimeMillis())
+                    .instruction(instruction)
+                    .build();
+
+            return ResponseEntity.ok(response);
+
+        } catch (IllegalArgumentException e) {
+            log.warn("Invalid storage controller heartbeat request: {}", e.getMessage());
+            return ResponseEntity.badRequest().build();
+        } catch (Exception e) {
+            log.error("Error processing storage controller heartbeat from node {}: {}",
+                    request.getNodeId(), e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Receive ISR status batch updates from storage nodes
+     * Processes lag threshold breaches and ISR membership changes
+     */
+    @PostMapping("/isr-status-batch")
+    public ResponseEntity<ISRStatusBatchResponse> receiveISRStatusBatch(
+            @Validated @RequestBody ISRStatusBatchRequest request) {
+
+        log.debug("Received ISR status batch from node: {} with {} updates",
+                request.getNodeId(), request.getIsrUpdates() != null ? request.getIsrUpdates().size() : 0);
+
+        try {
+            // Validate request
+            if (request.getNodeId() == null || request.getNodeId() < 0) {
+                log.warn("Invalid node ID: {}", request.getNodeId());
+                return ResponseEntity.badRequest().build();
+            }
+
+            // Process ISR status updates
+            List<String> instructions = new ArrayList<>();
+            if (request.getIsrUpdates() != null) {
+                for (ISRStatusUpdate update : request.getIsrUpdates()) {
+                    log.debug("Processing ISR update: {}-{}, type: {}, lag: {}",
+                            update.getTopic(), update.getPartition(),
+                            update.getUpdateType(), update.getCurrentLag());
+
+                    // Process different types of ISR updates
+                    switch (update.getUpdateType()) {
+                        case LAG_THRESHOLD_BREACHED:
+                            handleLagThresholdBreached(update, instructions);
+                            break;
+                        case LAG_THRESHOLD_RECOVERED:
+                            handleLagThresholdRecovered(update, instructions);
+                            break;
+                        case ISR_MEMBERSHIP_CHANGED:
+                            handleISRMembershipChanged(update, instructions);
+                            break;
+                        default:
+                            log.debug("Unhandled ISR update type: {}", update.getUpdateType());
+                    }
+                }
+            }
+
+            // Update broker status
+            try {
+                metadataService.updateBrokerStatus(request.getNodeId(), "ONLINE");
+            } catch (IllegalArgumentException e) {
+                // Broker doesn't exist, that's ok for ISR updates
+                log.debug("ISR batch from unknown broker: {}", request.getNodeId());
+            }
+
+            // Check if storage node has stale metadata
+            Long controllerMetadataVersion = System.currentTimeMillis(); // TODO: Get actual controller metadata version
+            boolean metadataInSync = request.getMetadataVersion() != null &&
+                    request.getMetadataVersion() >= (controllerMetadataVersion - 30000); // 30 second tolerance
+
+            ISRStatusBatchResponse response = ISRStatusBatchResponse.builder()
+                    .success(true)
+                    .controllerMetadataVersion(controllerMetadataVersion)
+                    .responseTimestamp(System.currentTimeMillis())
+                    .instructions(instructions)
+                    .build();
+
+            return ResponseEntity.ok(response);
+
+        } catch (IllegalArgumentException e) {
+            log.warn("Invalid ISR status batch request: {}", e.getMessage());
+            return ResponseEntity.badRequest().build();
+        } catch (Exception e) {
+            log.error("Error processing ISR status batch from node {}: {}",
+                    request.getNodeId(), e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Handle lag threshold breached event
+     */
+    private void handleLagThresholdBreached(ISRStatusUpdate update, List<String> instructions) {
+        log.warn("Lag threshold breached for {}-{}: currentLag={}, threshold={}",
+                update.getTopic(), update.getPartition(), update.getCurrentLag(), update.getLagThreshold());
+
+        try {
+            // Remove the lagging broker from ISR
+            metadataService.removeFromISR(update.getTopic(), update.getPartition(), update.getBrokerId());
+
+            instructions.add(String.format("ISR_SHRINK:%s-%d:REMOVED_BROKER_%d",
+                    update.getTopic(), update.getPartition(), update.getBrokerId()));
+
+            log.info("ISR shrunk for {}-{}: removed broker {} due to lag threshold breach",
+                    update.getTopic(), update.getPartition(), update.getBrokerId());
+
+        } catch (Exception e) {
+            log.error("Failed to shrink ISR for {}-{}: {}", update.getTopic(), update.getPartition(), e.getMessage());
+            instructions.add(String.format("ISR_SHRINK_FAILED:%s-%d",
+                    update.getTopic(), update.getPartition()));
+        }
+    }
+
+    /**
+     * Handle lag threshold recovered event
+     */
+    private void handleLagThresholdRecovered(ISRStatusUpdate update, List<String> instructions) {
+        log.info("Lag threshold recovered for {}-{}: currentLag={}, threshold={}",
+                update.getTopic(), update.getPartition(), update.getCurrentLag(), update.getLagThreshold());
+
+        try {
+            // Add the recovered broker back to ISR
+            metadataService.addToISR(update.getTopic(), update.getPartition(), update.getBrokerId());
+
+            instructions.add(String.format("ISR_EXPAND:%s-%d:ADDED_BROKER_%d",
+                    update.getTopic(), update.getPartition(), update.getBrokerId()));
+
+            log.info("ISR expanded for {}-{}: added broker {} due to lag recovery",
+                    update.getTopic(), update.getPartition(), update.getBrokerId());
+
+        } catch (Exception e) {
+            log.error("Failed to expand ISR for {}-{}: {}", update.getTopic(), update.getPartition(), e.getMessage());
+            instructions.add(String.format("ISR_EXPAND_FAILED:%s-%d",
+                    update.getTopic(), update.getPartition()));
+        }
+    }
+
+    /**
+     * Handle ISR membership changed event
+     */
+    private void handleISRMembershipChanged(ISRStatusUpdate update, List<String> instructions) {
+        log.info("ISR membership changed for {}-{}: inISR={}",
+                update.getTopic(), update.getPartition(), update.getIsInISR());
+
+        // This event is informational - the actual ISR changes are handled by the lag events above
+        // We could use this for additional validation or logging
+
+        instructions.add(String.format("ISR_MEMBERSHIP_ACK:%s-%d",
+                update.getTopic(), update.getPartition()));
     }
 
     /**
