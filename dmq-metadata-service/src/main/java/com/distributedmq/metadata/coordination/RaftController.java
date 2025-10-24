@@ -413,11 +413,21 @@ public class RaftController {
      * Apply committed entries to state machine
      */
     private void applyCommittedEntries() {
+        log.debug("Applying committed entries: lastApplied={}, commitIndex={}", lastApplied, commitIndex);
+
         while (lastApplied < commitIndex) {
             lastApplied++;
             RaftLogEntry entry = logPersistence.getEntry(lastApplied);
             if (entry != null) {
-                stateMachine.apply(entry.getCommand());
+                log.debug("Applying log entry {}: term={}, commandType={}",
+                    lastApplied, entry.getTerm(), entry.getCommand().getClass().getSimpleName());
+
+                try {
+                    stateMachine.apply(entry.getCommand());
+                    log.debug("Successfully applied command at index {}", lastApplied);
+                } catch (Exception e) {
+                    log.error("Failed to apply command at index {}: {}", lastApplied, e.getMessage(), e);
+                }
 
                 // Complete any pending futures for this entry
                 CompletableFuture<Void> pendingFuture = pendingCommands.remove(lastApplied);
@@ -425,8 +435,12 @@ public class RaftController {
                     pendingFuture.complete(null);
                 }
                 commandTimestamps.remove(lastApplied);
+            } else {
+                log.warn("Log entry {} is null, skipping application", lastApplied);
             }
         }
+
+        log.debug("Finished applying committed entries: lastApplied={}", lastApplied);
     }
 
     /**
@@ -490,13 +504,21 @@ public class RaftController {
 
             // Append new entries
             if (request.getEntries() != null && !request.getEntries().isEmpty()) {
+                log.debug("Follower {} received {} log entries from leader {}", nodeId, request.getEntries().size(), request.getLeaderId());
+                for (RaftLogEntry entry : request.getEntries()) {
+                    log.debug("Received entry: index={}, term={}, commandType={}",
+                        entry.getIndex(), entry.getTerm(), entry.getCommand().getClass().getSimpleName());
+                }
                 logPersistence.appendEntries(request.getPrevLogIndex() + 1, request.getEntries());
             }
 
             // Update commit index
             if (request.getLeaderCommit() > commitIndex) {
+                long oldCommitIndex = commitIndex;
                 commitIndex = Math.min(request.getLeaderCommit(), logPersistence.getLastLogIndex());
                 persistState();
+                log.debug("Updated commitIndex from {} to {} (leaderCommit={}, lastLogIndex={})",
+                    oldCommitIndex, commitIndex, request.getLeaderCommit(), logPersistence.getLastLogIndex());
                 applyCommittedEntries();
             }
 

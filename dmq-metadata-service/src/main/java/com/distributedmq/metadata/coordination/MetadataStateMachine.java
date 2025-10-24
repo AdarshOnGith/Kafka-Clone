@@ -30,14 +30,37 @@ public class MetadataStateMachine {
             return;
         }
         
-        log.debug("Applying command: {}", command.getClass().getSimpleName());
+        log.info("Applying command: {} of type {}", command, command.getClass().getSimpleName());
         
         if (command instanceof RegisterBrokerCommand) {
-            applyRegisterBroker((RegisterBrokerCommand) command);
+            RegisterBrokerCommand cmd = (RegisterBrokerCommand) command;
+            log.info("Applying RegisterBrokerCommand: brokerId={}, host={}, port={}", 
+                    cmd.getBrokerId(), cmd.getHost(), cmd.getPort());
+            applyRegisterBroker(cmd);
+            log.info("Successfully applied RegisterBrokerCommand for broker {}", cmd.getBrokerId());
+        } else if (command instanceof Map) {
+            // Handle deserialized Map (fallback for serialization issues)
+            @SuppressWarnings("unchecked")
+            Map<String, Object> map = (Map<String, Object>) command;
+            if (map.containsKey("brokerId") && map.containsKey("host") && map.containsKey("port")) {
+                log.info("Applying Map-based RegisterBrokerCommand: {}", map);
+                RegisterBrokerCommand cmd = RegisterBrokerCommand.builder()
+                        .brokerId(((Number) map.get("brokerId")).intValue())
+                        .host((String) map.get("host"))
+                        .port(((Number) map.get("port")).intValue())
+                        .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
+                        .build();
+                applyRegisterBroker(cmd);
+                log.info("Successfully applied Map-based RegisterBrokerCommand for broker {}", cmd.getBrokerId());
+            } else {
+                log.error("Unknown Map command structure: {}", map);
+            }
         } else if (command instanceof UnregisterBrokerCommand) {
             applyUnregisterBroker((UnregisterBrokerCommand) command);
         } else {
-            log.warn("Unknown command type: {}", command.getClass().getSimpleName());
+            log.error("Unknown command type: {} - {}", command.getClass().getSimpleName(), command);
+            // Try to handle it as a string representation
+            log.error("Command toString: {}", command.toString());
         }
     }
 

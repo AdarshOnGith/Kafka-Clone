@@ -20,7 +20,6 @@ public class BrokerNode implements Serializable {
     private Integer brokerId;
     private String host;
     private Integer port;
-    private String rack;
     private BrokerStatus status;
 
     public String getAddress() {

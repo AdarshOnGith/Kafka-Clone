@@ -18,11 +18,6 @@ public interface BrokerRepository extends JpaRepository<BrokerEntity, Integer> {
     List<BrokerEntity> findByStatus(String status);
 
     /**
-     * Find brokers by rack
-     */
-    List<BrokerEntity> findByRack(String rack);
-
-    /**
      * Check if broker exists by ID
      */
     boolean existsById(Integer id);

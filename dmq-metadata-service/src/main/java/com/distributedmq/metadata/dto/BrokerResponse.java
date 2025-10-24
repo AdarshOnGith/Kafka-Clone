@@ -19,7 +19,6 @@ public class BrokerResponse {
     private Integer id;
     private String host;
     private Integer port;
-    private String rack;
     private String status; // ONLINE, OFFLINE
     private String address; // host:port
     private Long registeredAt;

@@ -29,9 +29,6 @@ public class BrokerEntity {
     @Column(name = "port", nullable = false)
     private Integer port;
 
-    @Column(name = "rack")
-    private String rack;
-
     @Column(name = "status", nullable = false)
     private String status; // ONLINE, OFFLINE
 

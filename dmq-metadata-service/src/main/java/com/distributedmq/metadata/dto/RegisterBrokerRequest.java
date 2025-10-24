@@ -17,5 +17,4 @@ public class RegisterBrokerRequest {
     private Integer id;
     private String host;
     private Integer port;
-    private String rack;
 }

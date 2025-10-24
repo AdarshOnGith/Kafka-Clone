@@ -13,6 +13,8 @@ import com.distributedmq.metadata.entity.TopicEntity;
 import com.distributedmq.metadata.entity.BrokerEntity;
 import com.distributedmq.metadata.repository.TopicRepository;
 import com.distributedmq.metadata.repository.BrokerRepository;
+import com.distributedmq.metadata.coordination.MetadataStateMachine;
+import com.distributedmq.metadata.coordination.BrokerInfo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -43,6 +45,7 @@ public class MetadataServiceImpl implements MetadataService {
     private final ControllerService controllerService;
     private final MetadataPushService metadataPushService;
     private final com.distributedmq.metadata.coordination.RaftController raftController;
+    private final MetadataStateMachine metadataStateMachine;
     private final RestTemplate restTemplate;
 
     // In-memory storage for non-active metadata services
@@ -260,23 +263,20 @@ public class MetadataServiceImpl implements MetadataService {
                     raftController.getControllerLeaderId());
         }
 
-        // Check if broker already exists
-        Optional<BrokerEntity> existingBroker = brokerRepository.findById(request.getId());
-        if (existingBroker.isPresent()) {
-            BrokerEntity broker = existingBroker.get();
+        // Check if broker already exists in state machine
+        BrokerInfo existingBroker = metadataStateMachine.getBroker(request.getId());
+        if (existingBroker != null) {
             // If broker exists with same details, return existing broker (idempotent operation)
-            if (broker.getHost().equals(request.getHost()) &&
-                broker.getPort().equals(request.getPort()) &&
-                Objects.equals(broker.getRack(), request.getRack())) {
+            if (existingBroker.getHost().equals(request.getHost()) &&
+                existingBroker.getPort() == request.getPort()) {
                 log.info("Broker {} already exists with same details, returning existing broker", request.getId());
                 return BrokerResponse.builder()
-                        .id(broker.getId())
-                        .host(broker.getHost())
-                        .port(broker.getPort())
-                        .rack(broker.getRack())
-                        .status(broker.getStatus())
-                        .address(broker.getAddress())
-                        .registeredAt(broker.getRegisteredAt().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
+                        .id(existingBroker.getBrokerId())
+                        .host(existingBroker.getHost())
+                        .port(existingBroker.getPort())
+                        .status("ONLINE")
+                        .address(existingBroker.getHost() + ":" + existingBroker.getPort())
+                        .registeredAt(existingBroker.getRegistrationTime())
                         .build();
             } else {
                 // Broker exists but with different details - this is a conflict
@@ -284,35 +284,29 @@ public class MetadataServiceImpl implements MetadataService {
             }
         }
 
-        // Create broker entity
-        BrokerEntity entity = BrokerEntity.builder()
-                .id(request.getId())
+        // Register broker through Raft consensus via controller service
+        controllerService.registerBroker(BrokerNode.builder()
+                .brokerId(request.getId())
                 .host(request.getHost())
                 .port(request.getPort())
-                .rack(request.getRack())
-                .status("ONLINE")
-                .build();
-
-        BrokerEntity savedEntity = brokerRepository.save(entity);
-
-        // Register with controller service
-        controllerService.registerBroker(BrokerNode.builder()
-                .brokerId(savedEntity.getId())
-                .host(savedEntity.getHost())
-                .port(savedEntity.getPort())
                 .status(BrokerStatus.ONLINE)
                 .build());
 
-        log.info("Successfully registered broker: {}", savedEntity.getId());
+        // Get the broker from state machine (should be there now after Raft consensus)
+        BrokerInfo registeredBroker = metadataStateMachine.getBroker(request.getId());
+        if (registeredBroker == null) {
+            throw new RuntimeException("Broker registration failed - broker not found in state machine after Raft consensus");
+        }
+
+        log.info("Successfully registered broker: {}", registeredBroker.getBrokerId());
 
         return BrokerResponse.builder()
-                .id(savedEntity.getId())
-                .host(savedEntity.getHost())
-                .port(savedEntity.getPort())
-                .rack(savedEntity.getRack())
-                .status(savedEntity.getStatus())
-                .address(savedEntity.getAddress())
-                .registeredAt(savedEntity.getRegisteredAt().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
+                .id(registeredBroker.getBrokerId())
+                .host(registeredBroker.getHost())
+                .port(registeredBroker.getPort())
+                .status("ONLINE")
+                .address(registeredBroker.getHost() + ":" + registeredBroker.getPort())
+                .registeredAt(registeredBroker.getRegistrationTime())
                 .build();
     }
 
@@ -320,20 +314,19 @@ public class MetadataServiceImpl implements MetadataService {
     public BrokerResponse getBroker(Integer brokerId) {
         log.debug("Getting broker: {}", brokerId);
 
-        Optional<BrokerEntity> entity = brokerRepository.findById(brokerId);
-        if (entity.isEmpty()) {
+        // Read from Raft state machine
+        BrokerInfo brokerInfo = metadataStateMachine.getBroker(brokerId);
+        if (brokerInfo == null) {
             throw new IllegalArgumentException("Broker not found: " + brokerId);
         }
 
-        BrokerEntity broker = entity.get();
         return BrokerResponse.builder()
-                .id(broker.getId())
-                .host(broker.getHost())
-                .port(broker.getPort())
-                .rack(broker.getRack())
-                .status(broker.getStatus())
-                .address(broker.getAddress())
-                .registeredAt(broker.getRegisteredAt().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
+                .id(brokerInfo.getBrokerId())
+                .host(brokerInfo.getHost())
+                .port(brokerInfo.getPort())
+                .status("ONLINE") // All brokers in state machine are considered online
+                .address(brokerInfo.getHost() + ":" + brokerInfo.getPort())
+                .registeredAt(brokerInfo.getRegistrationTime())
                 .build();
     }
 
@@ -341,20 +334,17 @@ public class MetadataServiceImpl implements MetadataService {
     public List<BrokerResponse> listBrokers() {
         log.debug("Listing all brokers");
 
-        List<BrokerEntity> entities = brokerRepository.findAll();
-        return entities.stream()
-                .map(entity -> {
-                    BrokerResponse response = BrokerResponse.builder()
-                            .id(entity.getId())
-                            .host(entity.getHost())
-                            .port(entity.getPort())
-                            .rack(entity.getRack())
-                            .status(entity.getStatus())
-                            .address(entity.getAddress())
-                            .registeredAt(entity.getRegisteredAt().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
-                            .build();
-                    return response;
-                })
+        // Read from Raft state machine (consistent across all nodes)
+        Map<Integer, BrokerInfo> allBrokers = metadataStateMachine.getAllBrokers();
+        return allBrokers.values().stream()
+                .map(brokerInfo -> BrokerResponse.builder()
+                        .id(brokerInfo.getBrokerId())
+                        .host(brokerInfo.getHost())
+                        .port(brokerInfo.getPort())
+                        .status("ONLINE") // All brokers in state machine are considered online
+                        .address(brokerInfo.getHost() + ":" + brokerInfo.getPort())
+                        .registeredAt(brokerInfo.getRegistrationTime())
+                        .build())
                 .collect(Collectors.toList());
     }
 

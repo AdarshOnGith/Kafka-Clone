@@ -22,7 +22,8 @@ import java.util.concurrent.ConcurrentSkipListMap;
 public class RaftLogPersistence {
 
     private static final String LOG_FILE_NAME = "raft.log";
-    private static final String METADATA_FILE_NAME = "raft.metadata";
+    private static final String LOG_METADATA_FILE_NAME = "raft-log.metadata";
+    private static final String RAFT_STATE_FILE_NAME = "raft-state.metadata";
 
     private final String logDir;
     private final ConcurrentNavigableMap<Long, RaftLogEntry> logEntries;
@@ -71,8 +72,8 @@ public class RaftLogPersistence {
         lastLogIndex = entry.getIndex();
         lastLogTerm = entry.getTerm();
 
-        // Persist to disk
-        persistLogEntry(entry);
+        // Persist entire log to disk (rewrite file)
+        persistEntireLog();
 
         log.debug("Successfully appended log entry: {}", entry);
     }
@@ -105,10 +106,8 @@ public class RaftLogPersistence {
         lastLogIndex = lastEntry.getIndex();
         lastLogTerm = lastEntry.getTerm();
 
-        // Persist all entries
-        for (RaftLogEntry entry : entries) {
-            persistLogEntry(entry);
-        }
+        // Persist entire log to disk (rewrite file)
+        persistEntireLog();
 
         log.debug("Successfully appended {} log entries", entries.size());
     }
@@ -157,19 +156,22 @@ public class RaftLogPersistence {
     }
 
     public synchronized void persistMetadata(RaftPersistentState state) {
-        File metadataFile = new File(logDir, METADATA_FILE_NAME);
+        // Update local commit index
+        this.commitIndex = state.getCommitIndex();
+
+        File metadataFile = new File(logDir, RAFT_STATE_FILE_NAME);
         try (DataOutputStream dos = new DataOutputStream(new FileOutputStream(metadataFile))) {
             dos.writeLong(state.getCurrentTerm());
             dos.writeInt(state.getVotedFor() != null ? state.getVotedFor() : -1);
             dos.writeLong(state.getCommitIndex());
         } catch (IOException e) {
-            log.error("Failed to persist Raft metadata", e);
-            throw new RuntimeException("Metadata persistence failed", e);
+            log.error("Failed to persist Raft state", e);
+            throw new RuntimeException("Raft state persistence failed", e);
         }
     }
 
     public RaftPersistentState loadPersistedState() {
-        File metadataFile = new File(logDir, METADATA_FILE_NAME);
+        File metadataFile = new File(logDir, RAFT_STATE_FILE_NAME);
         if (!metadataFile.exists()) {
             return null;
         }
@@ -247,7 +249,7 @@ public class RaftLogPersistence {
 
         // Persist changes
         persistMetadata();
-        rewriteLogFile();
+        persistEntireLog();
 
         log.info("Truncated log from index {} onwards. New last index: {}", fromIndex, lastLogIndex);
     }
@@ -275,9 +277,9 @@ public class RaftLogPersistence {
     }
 
     private void loadPersistedLog() throws IOException, ClassNotFoundException {
-        File metadataFile = new File(logDir, METADATA_FILE_NAME);
+        File metadataFile = new File(logDir, LOG_METADATA_FILE_NAME);
         if (metadataFile.exists()) {
-            loadMetadata(metadataFile);
+            loadLogMetadata(metadataFile);
         }
 
         File logFile = new File(logDir, LOG_FILE_NAME);
@@ -288,13 +290,13 @@ public class RaftLogPersistence {
         log.info("Loaded persisted Raft log. Last index: {}, Commit index: {}", lastLogIndex, commitIndex);
     }
 
-    private void loadMetadata(File metadataFile) throws IOException {
+    private void loadLogMetadata(File metadataFile) throws IOException {
         try (DataInputStream dis = new DataInputStream(new FileInputStream(metadataFile))) {
             lastLogIndex = dis.readLong();
             lastLogTerm = dis.readLong();
             commitIndex = dis.readLong();
         } catch (EOFException e) {
-            log.warn("Corrupted or incomplete metadata file (EOF), starting fresh: {}", e.getMessage());
+            log.warn("Corrupted or incomplete log metadata file (EOF), starting fresh: {}", e.getMessage());
             // Reset to defaults for corrupted file
             lastLogIndex = 0;
             lastLogTerm = 0;
@@ -304,7 +306,7 @@ public class RaftLogPersistence {
                 metadataFile.delete();
             }
         } catch (IOException e) {
-            log.warn("Corrupted or incomplete metadata file (IO), starting fresh: {}", e.getMessage());
+            log.warn("Corrupted or incomplete log metadata file (IO), starting fresh: {}", e.getMessage());
             // Reset to defaults for corrupted file
             lastLogIndex = 0;
             lastLogTerm = 0;
@@ -314,7 +316,7 @@ public class RaftLogPersistence {
                 metadataFile.delete();
             }
         }
-        log.debug("Loaded Raft metadata: lastLogIndex={}, lastLogTerm={}, commitIndex={}",
+        log.debug("Loaded log metadata: lastLogIndex={}, lastLogTerm={}, commitIndex={}",
                 lastLogIndex, lastLogTerm, commitIndex);
     }
 
@@ -343,37 +345,29 @@ public class RaftLogPersistence {
         log.debug("Loaded {} log entries from disk", logEntries.size());
     }
 
-    private synchronized void persistLogEntry(RaftLogEntry entry) {
-        try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(
-                new File(logDir, LOG_FILE_NAME), true))) {
-            oos.writeObject(entry);
-        } catch (IOException e) {
-            log.error("Failed to persist log entry: {}", entry, e);
-            throw new RuntimeException("Log persistence failed", e);
-        }
-    }
-
-    private synchronized void persistMetadata() {
-        File metadataFile = new File(logDir, METADATA_FILE_NAME);
-        try (DataOutputStream dos = new DataOutputStream(new FileOutputStream(metadataFile))) {
-            dos.writeLong(lastLogIndex);
-            dos.writeLong(lastLogTerm);
-            dos.writeLong(commitIndex);
-        } catch (IOException e) {
-            log.error("Failed to persist Raft metadata", e);
-            throw new RuntimeException("Metadata persistence failed", e);
-        }
-    }
-
-    private synchronized void rewriteLogFile() {
+    private synchronized void persistEntireLog() {
         File logFile = new File(logDir, LOG_FILE_NAME);
         try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(logFile, false))) {
             for (RaftLogEntry entry : logEntries.values()) {
                 oos.writeObject(entry);
             }
         } catch (IOException e) {
-            log.error("Failed to rewrite log file", e);
-            throw new RuntimeException("Log rewrite failed", e);
+            log.error("Failed to persist entire log", e);
+            throw new RuntimeException("Log persistence failed", e);
         }
     }
+
+    private synchronized void persistMetadata() {
+        File metadataFile = new File(logDir, LOG_METADATA_FILE_NAME);
+        try (DataOutputStream dos = new DataOutputStream(new FileOutputStream(metadataFile))) {
+            dos.writeLong(lastLogIndex);
+            dos.writeLong(lastLogTerm);
+            dos.writeLong(commitIndex);
+        } catch (IOException e) {
+            log.error("Failed to persist log metadata", e);
+            throw new RuntimeException("Log metadata persistence failed", e);
+        }
+    }
+
+
 }
