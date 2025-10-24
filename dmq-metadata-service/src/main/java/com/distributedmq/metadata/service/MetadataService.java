@@ -1,7 +1,5 @@
 package com.distributedmq.metadata.service;
 
-import com.distributedmq.common.dto.HeartbeatRequest;
-import com.distributedmq.common.dto.HeartbeatResponse;
 import com.distributedmq.common.dto.MetadataUpdateRequest;
 import com.distributedmq.common.dto.MetadataUpdateResponse;
 import com.distributedmq.common.model.TopicMetadata;
@@ -72,12 +70,6 @@ public interface MetadataService {
      * Used by non-active metadata services to receive synced data
      */
     void receiveMetadataFromController(com.distributedmq.common.dto.MetadataUpdateRequest metadataUpdate);
-
-    /**
-     * Send heartbeat to controller with current sync status
-     * Returns heartbeat response indicating if service is in sync
-     */
-    com.distributedmq.common.dto.HeartbeatResponse sendHeartbeat();
 
     /**
      * Get the timestamp of the last metadata update received by this service

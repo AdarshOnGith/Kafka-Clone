@@ -1,8 +1,6 @@
 package com.distributedmq.storage.replication;
 
 import com.distributedmq.common.dto.MetadataUpdateRequest;
-import com.distributedmq.common.dto.StorageHeartbeatRequest;
-import com.distributedmq.common.dto.StorageHeartbeatResponse;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;
@@ -94,7 +92,6 @@ public class MetadataStore {
                         .host(brokerInfo.getHost())
                         .port(brokerInfo.getPort())
                         .isAlive(brokerInfo.isAlive())
-                        .lastHeartbeat(brokerInfo.getLastHeartbeat())
                         .build();
                 updateBroker(broker);
             }
@@ -291,7 +288,6 @@ public class MetadataStore {
                     new MetadataUpdateRequest.BrokerInfo();
             brokerInfo.setId(brokerId);
             brokerInfo.setAlive(isAlive);
-            brokerInfo.setLastHeartbeat(System.currentTimeMillis());
 
             MetadataUpdateRequest updateRequest = MetadataUpdateRequest.builder()
                     .brokers(List.of(brokerInfo))
@@ -367,132 +363,6 @@ public class MetadataStore {
     }
 
     /**
-     * Send heartbeat to controller with current sync status
-     */
-    public void sendHeartbeatToController() {
-        try {
-            // Use the configured metadata service URL
-            String controllerUrl = metadataServiceUrl;
-            if (controllerUrl == null) {
-                log.warn("Metadata service URL not configured, cannot send heartbeat");
-                return;
-            }
-
-            // Create heartbeat request using proper DTO
-            StorageHeartbeatRequest heartbeatRequest = StorageHeartbeatRequest.builder()
-                    .storageServiceId(localBrokerId)
-                    .currentMetadataVersion(currentMetadataVersion)
-                    .lastMetadataUpdateTimestamp(lastMetadataUpdateTimestamp)
-                    .heartbeatTimestamp(System.currentTimeMillis())
-                    .alive(true)
-                    .partitionsLeading(0) // TODO: implement actual partition counting
-                    .partitionsFollowing(0) // TODO: implement actual partition counting
-                    .build();
-
-            // Send heartbeat to controller and get typed response
-            String endpoint = controllerUrl + "/api/v1/metadata/storage-heartbeat";
-            ResponseEntity<StorageHeartbeatResponse> responseEntity =
-                    restTemplate.postForEntity(endpoint, heartbeatRequest, StorageHeartbeatResponse.class);
-
-            if (responseEntity.getStatusCode().is2xxSuccessful()) {
-                StorageHeartbeatResponse response = responseEntity.getBody();
-                if (response != null) {
-                    processHeartbeatResponse(response);
-                    log.debug("Successfully sent heartbeat to controller: success={}, inSync={}, instruction={}",
-                            response.isSuccess(), response.isInSync(), response.getInstruction());
-                } else {
-                    log.warn("Heartbeat response body was null");
-                }
-            } else {
-                log.warn("Heartbeat to controller failed with status: {}", responseEntity.getStatusCode());
-            }
-
-        } catch (Exception e) {
-            log.error("Failed to send heartbeat to controller: {}", e.getMessage());
-        }
-    }
-
-    /**
-     * Process heartbeat response from controller
-     */
-    private void processHeartbeatResponse(StorageHeartbeatResponse response) {
-        // Check if heartbeat was successful
-        if (!response.isSuccess()) {
-            log.warn("Heartbeat was not successful: {}", response.getErrorMessage());
-            return;
-        }
-
-        // Check if metadata is out of sync
-        if (!response.isInSync()) {
-            log.info("Metadata is out of sync. Current version: {}, Controller version: {}",
-                    currentMetadataVersion, response.getControllerMetadataVersion());
-
-            // Request metadata refresh
-            requestMetadataRefresh();
-
-            // Update our metadata version to match controller
-            if (response.getControllerMetadataVersion() != null) {
-                this.currentMetadataVersion = response.getControllerMetadataVersion();
-                this.lastMetadataUpdateTimestamp = response.getResponseTimestamp() != null ?
-                        response.getResponseTimestamp() : System.currentTimeMillis();
-            }
-        }
-
-        // Process any instructions from controller
-        if (response.getInstruction() != null && !response.getInstruction().isEmpty()) {
-            processControllerInstruction(response.getInstruction());
-        }
-    }
-
-    /**
-     * Request metadata refresh from metadata service
-     */
-    private void requestMetadataRefresh() {
-        try {
-            if (metadataServiceUrl == null) {
-                log.warn("Metadata service URL not configured, cannot request refresh");
-                return;
-            }
-
-            String endpoint = metadataServiceUrl + "/api/v1/metadata/refresh";
-            Map<String, Object> request = new HashMap<>();
-            request.put("brokerId", localBrokerId);
-            request.put("currentVersion", currentMetadataVersion);
-
-            // Send refresh request
-            Map<String, Object> response = restTemplate.postForObject(endpoint, request, Map.class);
-
-            if (response != null) {
-                log.info("Requested metadata refresh: {}", response);
-            } else {
-                log.warn("Metadata refresh request returned null response");
-            }
-
-        } catch (Exception e) {
-            log.error("Failed to request metadata refresh: {}", e.getMessage());
-        }
-    }
-
-    /**
-     * Process instruction from controller
-     */
-    private void processControllerInstruction(String instruction) {
-        log.info("Processing controller instruction: {}", instruction);
-
-        // Parse and handle different instruction types
-        if ("METADATA_OUTDATED".equals(instruction)) {
-            // Already handled in processHeartbeatResponse
-            log.debug("Metadata outdated instruction already processed");
-        } else if (instruction.startsWith("ISR_")) {
-            // ISR-related instructions
-            log.info("Received ISR instruction: {}", instruction);
-            // TODO: Implement ISR instruction processing
-        } else {
-            log.warn("Unknown controller instruction: {}", instruction);
-        }
-    }
-
-    /**
      * Get current metadata version
      */
     public Long getCurrentMetadataVersion() {
@@ -510,12 +380,10 @@ public class MetadataStore {
     // These will be implemented when metadata service is available
     // - requestMetadataRefresh() - Request latest metadata from metadata service
     // - registerWithMetadataService() - Register this broker with metadata service
-    // - sendHeartbeat() - Send periodic heartbeats to metadata service
 
     // TODO: Add methods to sync with metadata service (for later implementation)
     // - fetchPartitionMetadata()
     // - registerBroker()
-    // - heartbeat()
     // - updateISR() - ISR management for advanced replication
 
     // TODO: Add initialization methods for testing/basic setup (needed for replication flow)

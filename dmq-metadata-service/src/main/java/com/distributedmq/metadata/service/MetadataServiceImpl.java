@@ -1,7 +1,5 @@
 package com.distributedmq.metadata.service;
 
-import com.distributedmq.common.dto.HeartbeatRequest;
-import com.distributedmq.common.dto.HeartbeatResponse;
 import com.distributedmq.common.dto.MetadataUpdateRequest;
 import com.distributedmq.common.dto.MetadataUpdateResponse;
 import com.distributedmq.common.model.TopicConfig;
@@ -51,15 +49,12 @@ public class MetadataServiceImpl implements MetadataService {
     private final Map<String, TopicMetadata> metadataCache = new ConcurrentHashMap<>();
     private volatile boolean hasSyncedData = false;
 
-    // Metadata service registry (controller only)
-    private final Map<Integer, MetadataServiceInfo> metadataServiceRegistry = new ConcurrentHashMap<>();
-
     @PostConstruct
     public void init() {
         log.info("Initializing MetadataServiceImpl");
         // Register this service with itself if it's the controller
         if (raftController.isControllerLeader()) {
-            registerMetadataService(getCurrentServiceId(), System.currentTimeMillis());
+            // Controller initialization - no heartbeat registration needed
         }
     }
 
@@ -282,8 +277,6 @@ public class MetadataServiceImpl implements MetadataService {
                         .status(broker.getStatus())
                         .address(broker.getAddress())
                         .registeredAt(broker.getRegisteredAt().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
-                        .lastHeartbeat(broker.getLastHeartbeat() != null ?
-                            broker.getLastHeartbeat().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli() : null)
                         .build();
             } else {
                 // Broker exists but with different details - this is a conflict
@@ -320,8 +313,6 @@ public class MetadataServiceImpl implements MetadataService {
                 .status(savedEntity.getStatus())
                 .address(savedEntity.getAddress())
                 .registeredAt(savedEntity.getRegisteredAt().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
-                .lastHeartbeat(savedEntity.getLastHeartbeat() != null ?
-                    savedEntity.getLastHeartbeat().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli() : null)
                 .build();
     }
 
@@ -343,8 +334,6 @@ public class MetadataServiceImpl implements MetadataService {
                 .status(broker.getStatus())
                 .address(broker.getAddress())
                 .registeredAt(broker.getRegisteredAt().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
-                .lastHeartbeat(broker.getLastHeartbeat() != null ?
-                    broker.getLastHeartbeat().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli() : null)
                 .build();
     }
 
@@ -363,8 +352,6 @@ public class MetadataServiceImpl implements MetadataService {
                             .status(entity.getStatus())
                             .address(entity.getAddress())
                             .registeredAt(entity.getRegisteredAt().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
-                            .lastHeartbeat(entity.getLastHeartbeat() != null ?
-                                entity.getLastHeartbeat().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli() : null)
                             .build();
                     return response;
                 })
@@ -383,10 +370,6 @@ public class MetadataServiceImpl implements MetadataService {
 
         BrokerEntity entity = entityOpt.get();
         entity.setStatus(status);
-
-        if ("ONLINE".equals(status)) {
-            entity.setLastHeartbeat(java.time.LocalDateTime.now());
-        }
 
         brokerRepository.save(entity);
 
@@ -479,47 +462,6 @@ public class MetadataServiceImpl implements MetadataService {
 
         hasSyncedData = true;
         log.info("Successfully received and cached metadata from active controller");
-    }
-
-    @Override
-    public HeartbeatResponse sendHeartbeat() {
-        log.debug("Sending heartbeat to controller");
-
-        // If this service is the controller, no need to send heartbeat to itself
-        if (raftController.isControllerLeader()) {
-            log.debug("This service is the controller, skipping heartbeat send");
-            return HeartbeatResponse.builder()
-                    .success(true)
-                    .inSync(true)
-                    .responseTimestamp(System.currentTimeMillis())
-                    .build();
-        }
-
-        try {
-            // Get controller URL (placeholder - should use service discovery)
-            String controllerUrl = getControllerUrl(raftController.getControllerLeaderId());
-
-            HeartbeatRequest heartbeat = HeartbeatRequest.builder()
-                    .serviceId(getCurrentServiceId()) // TODO: Get actual service ID
-                    .lastMetadataUpdateTimestamp(getLastMetadataUpdateTimestamp())
-                    .heartbeatTimestamp(System.currentTimeMillis())
-                    .build();
-
-            String heartbeatEndpoint = controllerUrl + "/api/v1/metadata/heartbeat";
-            HeartbeatResponse response = restTemplate.postForObject(heartbeatEndpoint, heartbeat, HeartbeatResponse.class);
-
-            log.debug("Heartbeat sent successfully. In sync: {}", response != null ? response.isInSync() : false);
-            return response;
-
-        } catch (RestClientException e) {
-            log.warn("Failed to send heartbeat to controller: {}", e.getMessage());
-            return HeartbeatResponse.builder()
-                    .success(false)
-                    .inSync(false)
-                    .errorMessage("Failed to send heartbeat: " + e.getMessage())
-                    .responseTimestamp(System.currentTimeMillis())
-                    .build();
-        }
     }
 
     @Override
@@ -639,7 +581,6 @@ public class MetadataServiceImpl implements MetadataService {
                 .host(brokerNode.getHost())
                 .port(brokerNode.getPort())
                 .isAlive(brokerNode.getStatus() == com.distributedmq.common.model.BrokerStatus.ONLINE)
-                .lastHeartbeat(System.currentTimeMillis())
                 .build();
     }
 
@@ -734,67 +675,12 @@ public class MetadataServiceImpl implements MetadataService {
     }
 
     /**
-     * Information about a registered metadata service
-     */
-    private static class MetadataServiceInfo {
-        private final Integer serviceId;
-        private volatile Long lastHeartbeatTimestamp;
-        private volatile Long lastMetadataUpdateTimestamp;
-
-        public MetadataServiceInfo(Integer serviceId, Long lastHeartbeatTimestamp) {
-            this.serviceId = serviceId;
-            this.lastHeartbeatTimestamp = lastHeartbeatTimestamp;
-            this.lastMetadataUpdateTimestamp = 0L;
-        }
-
-        public Integer getServiceId() { return serviceId; }
-        public Long getLastHeartbeatTimestamp() { return lastHeartbeatTimestamp; }
-        public void setLastHeartbeatTimestamp(Long timestamp) { this.lastHeartbeatTimestamp = timestamp; }
-        public Long getLastMetadataUpdateTimestamp() { return lastMetadataUpdateTimestamp; }
-        public void setLastMetadataUpdateTimestamp(Long timestamp) { this.lastMetadataUpdateTimestamp = timestamp; }
-    }
-
-    /**
-     * Register or update a metadata service in the registry
-     */
-    private void registerMetadataService(Integer serviceId, Long heartbeatTimestamp) {
-        MetadataServiceInfo info = metadataServiceRegistry.computeIfAbsent(serviceId,
-                id -> new MetadataServiceInfo(id, heartbeatTimestamp));
-        info.setLastHeartbeatTimestamp(heartbeatTimestamp);
-        log.debug("Registered/updated metadata service: {}", serviceId);
-    }
-
-    /**
      * Get the controller's current metadata timestamp (truth value)
      */
     private Long getControllerMetadataTimestamp() {
         // The controller's timestamp is the current time, as it's always up to date
         // In a real implementation, this could be the timestamp of the last committed metadata change
         return System.currentTimeMillis();
-    }
-
-    /**
-     * Trigger metadata sync for a lagging service
-     */
-    private void triggerMetadataSyncForService(Integer serviceId) {
-        try {
-            // Get the service URL (placeholder - should use service discovery)
-            String serviceUrl = getMetadataServiceUrl(serviceId);
-
-            // Push all current metadata to the lagging service
-            pushAllMetadataToService(serviceUrl);
-
-            // Update the service's last metadata update timestamp
-            MetadataServiceInfo info = metadataServiceRegistry.get(serviceId);
-            if (info != null) {
-                info.setLastMetadataUpdateTimestamp(System.currentTimeMillis());
-            }
-
-            log.info("Successfully triggered metadata sync for lagging service: {}", serviceId);
-
-        } catch (Exception e) {
-            log.error("Failed to trigger metadata sync for service {}: {}", serviceId, e.getMessage());
-        }
     }
 
     /**
@@ -862,7 +748,7 @@ public class MetadataServiceImpl implements MetadataService {
         }
 
         // Update last metadata timestamp
-        // This will be used for heartbeat synchronization
+        // This will be used for metadata synchronization
         log.debug("Local metadata updated from storage service");
     }
 
@@ -949,34 +835,10 @@ public class MetadataServiceImpl implements MetadataService {
      * Propagate update to all registered metadata services
      */
     private void propagateUpdateToAllMetadataServices(MetadataUpdateRequest storageUpdate) {
-        // Get all registered metadata services (from heartbeat registry)
-        for (Integer serviceId : metadataServiceRegistry.keySet()) {
-            try {
-                // Don't send back to the service that sent the original update
-                if (serviceId.equals(getCurrentServiceId())) {
-                    continue;
-                }
-
-                String serviceUrl = getMetadataServiceUrl(serviceId);
-                String endpoint = serviceUrl + "/api/v1/metadata/receive-metadata";
-
-                log.debug("Propagating storage update to metadata service {}: {}", serviceId, serviceUrl);
-
-                // Send the update to other metadata services
-                restTemplate.postForObject(endpoint, storageUpdate, MetadataUpdateResponse.class);
-
-                // Update the service's last metadata timestamp
-                MetadataServiceInfo info = metadataServiceRegistry.get(serviceId);
-                if (info != null) {
-                    info.setLastMetadataUpdateTimestamp(System.currentTimeMillis());
-                }
-
-            } catch (Exception e) {
-                log.error("Failed to propagate update to metadata service {}: {}", serviceId, e.getMessage());
-            }
-        }
-
-        log.info("Propagated storage update to all metadata services");
+        // Since heartbeat functionality has been removed, we no longer maintain a registry
+        // of metadata services. In a real implementation, this would use service discovery
+        // to find all metadata services and propagate updates to them.
+        log.info("Metadata service propagation skipped - heartbeat registry removed");
     }
 
     /**

@@ -400,13 +400,17 @@ public class StorageServiceImpl implements StorageService {
      * Replicate to ISR replicas and return detailed replication result
      */
     private ReplicationResult replicateToISR(ProduceRequest request, long baseOffset) {
+        // Get current high water mark for this partition
+        long currentHwm = getHighWaterMark(request.getTopic(), request.getPartition());
+        
         // For acks=-1, we need all ISR replicas to acknowledge
         boolean replicationSuccess = replicationManager.replicateBatch(
                 request.getTopic(),
                 request.getPartition(),
                 request.getMessages(),
                 baseOffset,
-                StorageConfig.ACKS_ALL
+                StorageConfig.ACKS_ALL,
+                currentHwm
         );
         
         // Get ISR information for detailed result
@@ -471,12 +475,14 @@ public class StorageServiceImpl implements StorageService {
         String topicPartition = getTopicPartitionKey(request.getTopic(), request.getPartition());
         CompletableFuture.runAsync(() -> {
             try {
+                long currentHwm = getHighWaterMark(request.getTopic(), request.getPartition());
                 boolean replicationSuccess = replicationManager.replicateBatch(
                     request.getTopic(),
                     request.getPartition(),
                     request.getMessages(),
                     finalBaseOffset,
-                    StorageConfig.ACKS_NONE
+                    StorageConfig.ACKS_NONE,
+                    currentHwm
                 );
                 log.debug("Async replication initiated for {}-{} at offset {} (acks=0), success: {}",
                          request.getTopic(), request.getPartition(), finalBaseOffset, replicationSuccess);
@@ -537,26 +543,33 @@ public class StorageServiceImpl implements StorageService {
             }
         }
         
+        // For acks=1, update HWM immediately after leader acknowledgment
+        // HWM should advance to the end of the batch we just wrote
+        long newHwm = baseOffset + request.getMessages().size();
+        wal.updateHighWaterMark(newHwm);
+        log.debug("Updated High Watermark to {} for topic-partition: {} (acks=1)",
+                 newHwm, getTopicPartitionKey(request.getTopic(), request.getPartition()));
+        
         // Replicate asynchronously to ISR followers (fire-and-forget)
-        // Background task will update HWM when min.insync.replicas acknowledge
+        // This doesn't affect the producer acknowledgment
         long finalBaseOffset = baseOffset;
         String topicPartition = getTopicPartitionKey(request.getTopic(), request.getPartition());
         CompletableFuture.runAsync(() -> {
             try {
+                long currentHwm = getHighWaterMark(request.getTopic(), request.getPartition());
                 boolean replicationSuccess = replicationManager.replicateBatch(
                     request.getTopic(),
                     request.getPartition(),
                     request.getMessages(),
                     finalBaseOffset,
-                    StorageConfig.ACKS_LEADER
+                    StorageConfig.ACKS_LEADER,
+                    currentHwm
                 );
                 log.debug("Async replication initiated for {}-{} at offset {} (acks=1), success: {}",
                          request.getTopic(), request.getPartition(), finalBaseOffset, replicationSuccess);
                 
-                // Update HWM if min.insync.replicas acknowledged
-                if (replicationSuccess) {
-                    updateHighWaterMarkAsync(topicPartition, wal);
-                }
+                // For acks=1, replication success/failure doesn't affect the response
+                // The producer was already acknowledged when the leader wrote
             } catch (Exception e) {
                 log.warn("Async replication failed for {}-{}: {}",
                         request.getTopic(), request.getPartition(), e.getMessage());
@@ -650,7 +663,7 @@ public class StorageServiceImpl implements StorageService {
 
     /**
      * Collect partition status for all partitions this node manages
-     * Used for controller heartbeat reporting
+     * Used for status reporting and monitoring
      */
     public List<PartitionStatus> collectPartitionStatus() {
         List<PartitionStatus> partitionStatuses = new ArrayList<>();

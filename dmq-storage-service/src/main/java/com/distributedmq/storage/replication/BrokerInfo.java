@@ -18,5 +18,4 @@ public class BrokerInfo {
     private String host;
     private Integer port;
     private boolean isAlive;
-    private Long lastHeartbeat;
 }

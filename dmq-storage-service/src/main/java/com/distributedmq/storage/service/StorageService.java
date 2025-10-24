@@ -52,7 +52,7 @@ public interface StorageService {
 
     /**
      * Collect partition status for all partitions this node manages
-     * Used for controller heartbeat reporting
+     * Used for status reporting and monitoring
      */
     List<PartitionStatus> collectPartitionStatus();
 

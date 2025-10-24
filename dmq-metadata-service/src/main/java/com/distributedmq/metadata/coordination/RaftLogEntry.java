@@ -5,6 +5,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.io.Serializable;
+
 /**
  * Raft log entry
  */
@@ -12,35 +14,28 @@ import lombok.NoArgsConstructor;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class RaftLogEntry {
-    
+public class RaftLogEntry implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
     /**
      * Term when entry was received by leader
      */
     private long term;
-    
+
     /**
      * Index in the log
      */
     private long index;
-    
+
     /**
      * Command/data to apply to state machine
      * Could be topic creation, partition assignment, etc.
      */
     private Object command;
-    
+
     /**
      * Type of command for processing
      */
-    private CommandType commandType;
-    
-    public enum CommandType {
-        CREATE_TOPIC,
-        DELETE_TOPIC,
-        UPDATE_PARTITION_LEADER,
-        REGISTER_BROKER,
-        UNREGISTER_BROKER,
-        UPDATE_ISR
-    }
+    private RaftCommandType commandType;
 }

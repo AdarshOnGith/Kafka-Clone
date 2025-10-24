@@ -6,7 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * Per-partition status for storage controller heartbeat
+ * Per-partition status for storage monitoring and reporting
  */
 @Data
 @Builder

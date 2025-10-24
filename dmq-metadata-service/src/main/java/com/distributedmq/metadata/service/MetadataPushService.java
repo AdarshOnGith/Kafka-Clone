@@ -197,7 +197,6 @@ public class MetadataPushService {
                 .host(brokerNode.getHost())
                 .port(brokerNode.getPort())
                 .isAlive(brokerNode.getStatus() == com.distributedmq.common.model.BrokerStatus.ONLINE)
-                .lastHeartbeat(System.currentTimeMillis())
                 .build();
     }
 }

@@ -45,12 +45,10 @@
     ]
   },
   "controller": {
-    "electionTimeoutMs": 5000,
-    "heartbeatIntervalMs": 1000
+    "electionTimeoutMs": 5000
   },
   "metadata": {
     "sync": {
-      "heartbeatIntervalMs": 5000,
       "syncTimeoutMs": 30000
     }
   }

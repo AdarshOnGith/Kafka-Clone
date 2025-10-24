@@ -23,5 +23,4 @@ public class BrokerResponse {
     private String status; // ONLINE, OFFLINE
     private String address; // host:port
     private Long registeredAt;
-    private Long lastHeartbeat;
 }

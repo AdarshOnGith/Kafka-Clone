@@ -1,18 +1,19 @@
 package com.distributedmq.metadata.coordination;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Raft-based Controller Coordinator (KRaft mode)
- * Manages controller leader election and consensus without ZooKeeper
- * 
- * Based on Kafka KRaft (Kafka Raft) architecture
+ * Implements the Raft consensus algorithm for leader election and log replication
  */
 @Slf4j
 @Component
@@ -30,115 +31,589 @@ public class RaftController {
     @Value("${kraft.raft.log-dir}")
     private String logDir;
 
-    private volatile boolean isLeader = false;
-    private volatile Integer currentLeaderId = null;
+    @Autowired
+    private RaftNodeConfig raftConfig;
+
+    @Autowired
+    private RaftLogPersistence logPersistence;
+
+    @Autowired
+    private MetadataStateMachine stateMachine;
+
+    @Autowired
+    private RaftNetworkClient networkClient;
+
+    // Raft state
+    private volatile RaftState state = RaftState.FOLLOWER;
     private volatile long currentTerm = 0;
+    private volatile Integer votedFor = null;
+    private volatile Integer currentLeaderId = null;
+
+    // Log state
+    private volatile long commitIndex = 0;
+    private volatile long lastApplied = 0;
+
+    // Leader state (only used when leader)
+    private final Map<Integer, Long> nextIndex = new ConcurrentHashMap<>();
+    private final Map<Integer, Long> matchIndex = new ConcurrentHashMap<>();
+
+    // Track pending commands waiting for commit
+    private final ConcurrentHashMap<Long, CompletableFuture<Void>> pendingCommands = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, Long> commandTimestamps = new ConcurrentHashMap<>();
+
+    // Timers
+    private ScheduledExecutorService scheduler;
+    private ScheduledFuture<?> electionTimeoutFuture;
+    private ScheduledFuture<?> heartbeatFuture;
+
+    // Election timeout tracking
+    private final AtomicLong lastHeartbeatTime = new AtomicLong(System.currentTimeMillis());
 
     @PostConstruct
     public void init() {
         log.info("Initializing Raft Controller for node: {}", nodeId);
-        
-        // TODO: Initialize Raft state machine
-        // TODO: Load committed log entries from disk
-        // TODO: Start election timeout timer
-        // TODO: Join Raft cluster
-        // TODO: Start heartbeat sender (if leader)
-        // TODO: Start heartbeat listener (if follower)
-        
-        // For testing: Make this node the leader
-        becomeLeader();
-        
-        log.info("Raft Controller initialized in LEADER state for testing");
+
+        // Initialize scheduler
+        scheduler = Executors.newScheduledThreadPool(2, r -> {
+            Thread t = new Thread(r);
+            t.setName("raft-scheduler-" + nodeId);
+            t.setDaemon(true);
+            return t;
+        });
+
+        // Load persisted state
+        loadPersistedState();
+
+        // Start election timeout
+        resetElectionTimeout();
+
+        // Start command timeout cleanup
+        scheduler.scheduleWithFixedDelay(this::cleanupTimedOutCommands, 10, 10, TimeUnit.SECONDS);
+
+        log.info("Raft Controller initialized: node={}, term={}, state={}",
+                nodeId, currentTerm, state);
     }
 
     @PreDestroy
     public void shutdown() {
         log.info("Shutting down Raft Controller for node: {}", nodeId);
-        
-        // TODO: Stop all timers
-        // TODO: Flush logs to disk
-        // TODO: Notify cluster of departure
+
+        if (scheduler != null) {
+            scheduler.shutdown();
+            try {
+                if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                    scheduler.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                scheduler.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        if (networkClient != null) {
+            networkClient.shutdown();
+        }
     }
 
     /**
-     * Become the leader (for testing purposes)
+     * Load persisted Raft state from disk
+     */
+    private void loadPersistedState() {
+        try {
+            RaftPersistentState persistedState = logPersistence.loadPersistedState();
+            if (persistedState != null) {
+                this.currentTerm = persistedState.getCurrentTerm();
+                this.votedFor = persistedState.getVotedFor();
+                this.commitIndex = persistedState.getCommitIndex();
+                log.info("Loaded persisted state: term={}, votedFor={}, commitIndex={}",
+                        currentTerm, votedFor, commitIndex);
+            }
+
+            // Load committed log entries and apply to state machine
+            List<RaftLogEntry> committedEntries = logPersistence.getEntries(1, commitIndex);
+            for (RaftLogEntry entry : committedEntries) {
+                stateMachine.apply(entry.getCommand());
+                lastApplied = entry.getIndex();
+            }
+            log.info("Applied {} committed log entries to state machine", committedEntries.size());
+
+        } catch (Exception e) {
+            log.error("Failed to load persisted state, starting fresh", e);
+            // Start with clean state
+            this.currentTerm = 0;
+            this.votedFor = null;
+            this.commitIndex = 0;
+            this.lastApplied = 0;
+        }
+    }
+
+    /**
+     * Reset election timeout with randomized delay
+     */
+    private void resetElectionTimeout() {
+        if (electionTimeoutFuture != null) {
+            electionTimeoutFuture.cancel(false);
+        }
+
+        long randomizedTimeout = electionTimeoutMs + ThreadLocalRandom.current().nextLong(electionTimeoutMs);
+        electionTimeoutFuture = scheduler.schedule(this::startElection, randomizedTimeout, TimeUnit.MILLISECONDS);
+        lastHeartbeatTime.set(System.currentTimeMillis());
+    }
+
+    /**
+     * Start leader election
+     */
+    private void startElection() {
+        synchronized (this) {
+            if (state == RaftState.LEADER) {
+                return; // Already leader
+            }
+
+            state = RaftState.CANDIDATE;
+            currentTerm++;
+            votedFor = nodeId;
+            currentLeaderId = null;
+
+            // Persist state change
+            persistState();
+
+            log.info("Starting election for term {}", currentTerm);
+
+            // Request votes from all peers
+            requestVotesFromPeers();
+
+            // Reset election timeout
+            resetElectionTimeout();
+        }
+    }
+
+    /**
+     * Request votes from all peer nodes
+     */
+    private void requestVotesFromPeers() {
+        long lastLogIndex = logPersistence.getLastLogIndex();
+        long lastLogTerm = logPersistence.getLastLogTerm();
+
+        RequestVoteRequest request = RequestVoteRequest.builder()
+                .term(currentTerm)
+                .candidateId(nodeId)
+                .lastLogIndex(lastLogIndex)
+                .lastLogTerm(lastLogTerm)
+                .build();
+
+        List<CompletableFuture<RequestVoteResponse>> voteFutures =
+                networkClient.sendRequestVoteToAll(raftConfig.getPeers(), request);
+
+        // Count votes asynchronously
+        CompletableFuture.allOf(voteFutures.toArray(new CompletableFuture[0]))
+                .thenRun(() -> countVotes(voteFutures));
+    }
+
+    /**
+     * Count votes and become leader if majority achieved
+     */
+    private void countVotes(List<CompletableFuture<RequestVoteResponse>> voteFutures) {
+        int votesGranted = 1; // Vote for self
+        int totalPeers = raftConfig.getPeers().size();
+
+        for (CompletableFuture<RequestVoteResponse> future : voteFutures) {
+            try {
+                RequestVoteResponse response = future.get();
+                if (response != null && response.isVoteGranted() && response.getTerm() == currentTerm) {
+                    votesGranted++;
+                } else if (response != null && response.getTerm() > currentTerm) {
+                    // Step down if we see a higher term
+                    stepDown(response.getTerm());
+                    return;
+                }
+            } catch (Exception e) {
+                log.warn("Failed to get vote response", e);
+            }
+        }
+
+        int majority = (totalPeers + 1) / 2 + 1; // Include self
+        if (votesGranted >= majority && state == RaftState.CANDIDATE) {
+            becomeLeader();
+        } else {
+            log.info("Election failed: got {}/{} votes needed", votesGranted, majority);
+        }
+    }
+
+    /**
+     * Become the leader
      */
     private void becomeLeader() {
-        this.isLeader = true;
-        this.currentLeaderId = nodeId;
-        this.currentTerm = 1; // Start with term 1
-        log.info("Node {} became the controller leader for term {}", nodeId, currentTerm);
-    }
+        synchronized (this) {
+            if (state != RaftState.CANDIDATE) {
+                return;
+            }
 
-    /**
-     * Handle vote request from another node
-     */
-    public boolean handleVoteRequest(int candidateId, long term, long lastLogIndex, long lastLogTerm) {
-        log.debug("Received vote request from candidate: {} for term: {}", candidateId, term);
-        
-        // TODO: Check if term is greater than current term
-        // TODO: Check if haven't voted in this term
-        // TODO: Check if candidate's log is at least as up-to-date
-        // TODO: Grant vote if all conditions met
-        // TODO: Reset election timeout
-        
-        return false; // Placeholder
-    }
+            state = RaftState.LEADER;
+            currentLeaderId = nodeId;
 
-    /**
-     * Handle heartbeat from leader
-     */
-    public void handleHeartbeat(int leaderId, long term, List<Object> entries) {
-        log.debug("Received heartbeat from leader: {} for term: {}", leaderId, term);
-        
-        // TODO: Update current term if heartbeat term is higher
-        // TODO: Reset election timeout
-        // TODO: Update currentLeaderId
-        // TODO: Append entries to log if any
-        // TODO: Send acknowledgment
-    }
+            // Initialize leader state
+            long nextLogIndex = logPersistence.getLastLogIndex() + 1;
+            for (RaftNodeConfig.NodeInfo peer : raftConfig.getPeers()) {
+                nextIndex.put(peer.getNodeId(), nextLogIndex);
+                matchIndex.put(peer.getNodeId(), 0L);
+            }
 
-    /**
-     * Append entry to Raft log (called by leader)
-     */
-    public void appendEntry(Object entry) {
-        if (!isLeader) {
-            throw new IllegalStateException("Only leader can append entries");
+            log.info("Node {} became leader for term {}", nodeId, currentTerm);
+
+            // Start sending heartbeats
+            startHeartbeatTimer();
         }
-        
-        log.debug("Leader appending entry to Raft log");
-        
-        // TODO: Append to local log
-        // TODO: Replicate to followers
-        // TODO: Wait for majority acknowledgment
-        // TODO: Commit entry
-        // TODO: Apply to state machine
     }
 
     /**
-     * Check if this node is the controller leader
+     * Step down to follower
      */
+    private void stepDown(long newTerm) {
+        synchronized (this) {
+            if (newTerm > currentTerm) {
+                currentTerm = newTerm;
+                votedFor = null;
+                state = RaftState.FOLLOWER;
+                currentLeaderId = null;
+
+                persistState();
+
+                // Stop leader activities
+                if (heartbeatFuture != null) {
+                    heartbeatFuture.cancel(false);
+                    heartbeatFuture = null;
+                }
+
+                // Fail all pending commands since we're no longer leader
+                for (CompletableFuture<Void> future : pendingCommands.values()) {
+                    if (!future.isDone()) {
+                        future.completeExceptionally(new IllegalStateException("Lost leadership"));
+                    }
+                }
+                pendingCommands.clear();
+
+                resetElectionTimeout();
+
+                log.info("Stepped down to follower for term {}", currentTerm);
+            }
+        }
+    }
+
+    /**
+     * Start heartbeat timer for leader
+     */
+    private void startHeartbeatTimer() {
+        if (heartbeatFuture != null) {
+            heartbeatFuture.cancel(false);
+        }
+
+        heartbeatFuture = scheduler.scheduleWithFixedDelay(
+                this::sendHeartbeats, 0, heartbeatIntervalMs, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Send heartbeats to all followers
+     */
+    private void sendHeartbeats() {
+        if (state != RaftState.LEADER) {
+            return;
+        }
+
+        for (RaftNodeConfig.NodeInfo peer : raftConfig.getPeers()) {
+            sendAppendEntriesToPeer(peer);
+        }
+    }
+
+    /**
+     * Send AppendEntries to a specific peer
+     */
+    private void sendAppendEntriesToPeer(RaftNodeConfig.NodeInfo peer) {
+        long prevLogIndex = nextIndex.get(peer.getNodeId()) - 1;
+        long prevLogTerm = logPersistence.getTermForIndex(prevLogIndex);
+
+        List<RaftLogEntry> entries = logPersistence.getEntries(
+                nextIndex.get(peer.getNodeId()), logPersistence.getLastLogIndex());
+
+        AppendEntriesRequest request = AppendEntriesRequest.builder()
+                .term(currentTerm)
+                .leaderId(nodeId)
+                .prevLogIndex(prevLogIndex)
+                .prevLogTerm(prevLogTerm)
+                .entries(entries)
+                .leaderCommit(commitIndex)
+                .build();
+
+        networkClient.sendAppendEntries(peer, request)
+                .thenAccept(response -> handleAppendEntriesResponse(peer, request, response));
+    }
+
+    /**
+     * Handle AppendEntries response from peer
+     */
+    private void handleAppendEntriesResponse(RaftNodeConfig.NodeInfo peer, AppendEntriesRequest request,
+                                           AppendEntriesResponse response) {
+        if (response.getTerm() > currentTerm) {
+            stepDown(response.getTerm());
+            return;
+        }
+
+        if (state != RaftState.LEADER || response.getTerm() != currentTerm) {
+            return;
+        }
+
+        if (response.isSuccess()) {
+            // Update match and next index
+            long matchIdx = request.getPrevLogIndex() + (request.getEntries() != null ? request.getEntries().size() : 0);
+            matchIndex.put(peer.getNodeId(), Math.max(matchIndex.get(peer.getNodeId()), matchIdx));
+            nextIndex.put(peer.getNodeId(), matchIdx + 1);
+
+            // Check if we can commit more entries
+            updateCommitIndex();
+        } else {
+            // Decrement next index and retry
+            long currentNextIndex = nextIndex.get(peer.getNodeId());
+            nextIndex.put(peer.getNodeId(), Math.max(1, currentNextIndex - 1));
+            // Will retry on next heartbeat
+        }
+    }
+
+    /**
+     * Update commit index based on majority replication
+     */
+    private void updateCommitIndex() {
+        long newCommitIndex = commitIndex;
+        int totalNodes = raftConfig.getPeers().size() + 1; // Include self
+
+        for (long index = commitIndex + 1; index <= logPersistence.getLastLogIndex(); index++) {
+            int replicatedCount = 1; // Self has it
+
+            for (RaftNodeConfig.NodeInfo peer : raftConfig.getPeers()) {
+                if (matchIndex.get(peer.getNodeId()) >= index) {
+                    replicatedCount++;
+                }
+            }
+
+            if (replicatedCount > totalNodes / 2) {
+                newCommitIndex = index;
+            } else {
+                break; // Can't commit further
+            }
+        }
+
+        if (newCommitIndex > commitIndex) {
+            commitIndex = newCommitIndex;
+            persistState();
+
+            // Apply committed entries to state machine
+            applyCommittedEntries();
+        }
+    }
+
+    /**
+     * Apply committed entries to state machine
+     */
+    private void applyCommittedEntries() {
+        while (lastApplied < commitIndex) {
+            lastApplied++;
+            RaftLogEntry entry = logPersistence.getEntry(lastApplied);
+            if (entry != null) {
+                stateMachine.apply(entry.getCommand());
+
+                // Complete any pending futures for this entry
+                CompletableFuture<Void> pendingFuture = pendingCommands.remove(lastApplied);
+                if (pendingFuture != null && !pendingFuture.isDone()) {
+                    pendingFuture.complete(null);
+                }
+                commandTimestamps.remove(lastApplied);
+            }
+        }
+    }
+
+    /**
+     * Handle incoming RequestVote RPC
+     */
+    public RequestVoteResponse handleRequestVote(RequestVoteRequest request) {
+        synchronized (this) {
+            if (request.getTerm() > currentTerm) {
+                stepDown(request.getTerm());
+            }
+
+            boolean grantVote = false;
+            if (request.getTerm() == currentTerm &&
+                (votedFor == null || votedFor.equals(request.getCandidateId())) &&
+                isLogUpToDate(request.getLastLogIndex(), request.getLastLogTerm())) {
+
+                votedFor = request.getCandidateId();
+                grantVote = true;
+                persistState();
+                resetElectionTimeout();
+            }
+
+            return RequestVoteResponse.builder()
+                    .term(currentTerm)
+                    .voteGranted(grantVote)
+                    .build();
+        }
+    }
+
+    /**
+     * Handle incoming AppendEntries RPC
+     */
+    public AppendEntriesResponse handleAppendEntries(AppendEntriesRequest request) {
+        synchronized (this) {
+            if (request.getTerm() > currentTerm) {
+                stepDown(request.getTerm());
+            }
+
+            if (request.getTerm() < currentTerm) {
+                return AppendEntriesResponse.builder()
+                        .term(currentTerm)
+                        .success(false)
+                        .build();
+            }
+
+            // Valid leader for this term
+            state = RaftState.FOLLOWER;
+            currentLeaderId = request.getLeaderId();
+            resetElectionTimeout();
+
+            // Check log consistency
+            if (request.getPrevLogIndex() > 0) {
+                RaftLogEntry prevEntry = logPersistence.getEntry(request.getPrevLogIndex());
+                if (prevEntry == null || prevEntry.getTerm() != request.getPrevLogTerm()) {
+                    return AppendEntriesResponse.builder()
+                            .term(currentTerm)
+                            .success(false)
+                            .build();
+                }
+            }
+
+            // Append new entries
+            if (request.getEntries() != null && !request.getEntries().isEmpty()) {
+                logPersistence.appendEntries(request.getPrevLogIndex() + 1, request.getEntries());
+            }
+
+            // Update commit index
+            if (request.getLeaderCommit() > commitIndex) {
+                commitIndex = Math.min(request.getLeaderCommit(), logPersistence.getLastLogIndex());
+                persistState();
+                applyCommittedEntries();
+            }
+
+            return AppendEntriesResponse.builder()
+                    .term(currentTerm)
+                    .success(true)
+                    .build();
+        }
+    }
+
+    /**
+     * Check if candidate's log is at least as up-to-date as ours
+     */
+    private boolean isLogUpToDate(long candidateLastLogIndex, long candidateLastLogTerm) {
+        long lastLogIndex = logPersistence.getLastLogIndex();
+        long lastLogTerm = logPersistence.getLastLogTerm();
+
+        return candidateLastLogTerm > lastLogTerm ||
+               (candidateLastLogTerm == lastLogTerm && candidateLastLogIndex >= lastLogIndex);
+    }
+
+    /**
+     * Persist current state
+     */
+    private void persistState() {
+        try {
+            RaftPersistentState state = RaftPersistentState.builder()
+                    .currentTerm(currentTerm)
+                    .votedFor(votedFor)
+                    .commitIndex(commitIndex)
+                    .build();
+            logPersistence.persistMetadata(state);
+        } catch (Exception e) {
+            log.error("Failed to persist Raft state", e);
+        }
+    }
+
+    /**
+     * Append a new command to the log (only leader can do this)
+     */
+    public CompletableFuture<Void> appendCommand(Object command) {
+        if (state != RaftState.LEADER) {
+            CompletableFuture<Void> future = new CompletableFuture<>();
+            future.completeExceptionally(new IllegalStateException("Not the leader"));
+            return future;
+        }
+
+        RaftLogEntry entry = RaftLogEntry.builder()
+                .term(currentTerm)
+                .index(logPersistence.getLastLogIndex() + 1)
+                .command(command)
+                .build();
+
+        logPersistence.appendEntry(entry);
+
+        // Create future for this command and store it
+        CompletableFuture<Void> commandFuture = new CompletableFuture<>();
+        pendingCommands.put(entry.getIndex(), commandFuture);
+        commandTimestamps.put(entry.getIndex(), System.currentTimeMillis());
+
+        // Trigger replication to followers
+        sendHeartbeats();
+
+        return commandFuture;
+    }
+
+    // Public API methods
+
     public boolean isControllerLeader() {
-        return isLeader;
+        return state == RaftState.LEADER;
     }
 
-    /**
-     * Get current controller leader ID
-     */
     public Integer getControllerLeaderId() {
         return currentLeaderId;
     }
 
-    /**
-     * Get current Raft term
-     */
     public long getCurrentTerm() {
         return currentTerm;
     }
 
-    // TODO: Add AppendEntries RPC handler
-    // TODO: Add log compaction/snapshot logic
-    // TODO: Add log persistence
-    // TODO: Add state machine application
-    // TODO: Add configuration change handling
+    public RaftState getState() {
+        return state;
+    }
+
+    public long getCommitIndex() {
+        return commitIndex;
+    }
+
+    public long getLastApplied() {
+        return lastApplied;
+    }
+
+    public Integer getNodeId() {
+        return nodeId;
+    }
+
+    /**
+     * Clean up timed-out pending commands
+     */
+    private void cleanupTimedOutCommands() {
+        long now = System.currentTimeMillis();
+        long timeoutMs = 30000; // 30 seconds
+
+        List<Long> timedOutIndices = new ArrayList<>();
+        for (Map.Entry<Long, Long> entry : commandTimestamps.entrySet()) {
+            if (now - entry.getValue() > timeoutMs) {
+                timedOutIndices.add(entry.getKey());
+            }
+        }
+
+        for (Long index : timedOutIndices) {
+            CompletableFuture<Void> future = pendingCommands.remove(index);
+            commandTimestamps.remove(index);
+            if (future != null && !future.isDone()) {
+                future.completeExceptionally(new TimeoutException("Command commit timed out"));
+                log.warn("Command at index {} timed out waiting for commit", index);
+            }
+        }
+    }
 }

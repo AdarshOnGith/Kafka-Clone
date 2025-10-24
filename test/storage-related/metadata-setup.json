@@ -1,21 +1,21 @@
 {
   "brokers": [
     {
-      "id": 1,
+      "id": 101,
       "host": "localhost",
       "port": 8081,
       "isAlive": true,
       "lastHeartbeat": 1703123456789
     },
     {
-      "id": 2,
+      "id": 102,
       "host": "localhost",
       "port": 8082,
       "isAlive": true,
       "lastHeartbeat": 1703123456789
     },
     {
-      "id": 3,
+      "id": 103,
       "host": "localhost",
       "port": 8083,
       "isAlive": true,
@@ -26,25 +26,25 @@
     {
       "topic": "test-topic",
       "partition": 0,
-      "leaderId": 1,
-      "followerIds": [2, 3],
-      "isrIds": [1, 2, 3],
+      "leaderId": 101,
+      "followerIds": [102, 103],
+      "isrIds": [101, 102, 103],
       "leaderEpoch": 1
     },
     {
       "topic": "orders",
       "partition": 0,
-      "leaderId": 2,
-      "followerIds": [1, 3],
-      "isrIds": [2, 1],
+      "leaderId": 102,
+      "followerIds": [101, 103],
+      "isrIds": [102, 101],
       "leaderEpoch": 1
     },
     {
       "topic": "orders",
       "partition": 1,
-      "leaderId": 3,
-      "followerIds": [1, 2],
-      "isrIds": [3, 2],
+      "leaderId": 103,
+      "followerIds": [101, 102],
+      "isrIds": [103, 102],
       "leaderEpoch": 1
     }
   ],

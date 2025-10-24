@@ -198,12 +198,9 @@ public class ServiceDiscovery {
 
     public static class ControllerConfig {
         private Integer electionTimeoutMs = 5000;
-        private Integer heartbeatIntervalMs = 1000;
 
         public Integer getElectionTimeoutMs() { return electionTimeoutMs; }
         public void setElectionTimeoutMs(Integer electionTimeoutMs) { this.electionTimeoutMs = electionTimeoutMs; }
-        public Integer getHeartbeatIntervalMs() { return heartbeatIntervalMs; }
-        public void setHeartbeatIntervalMs(Integer heartbeatIntervalMs) { this.heartbeatIntervalMs = heartbeatIntervalMs; }
     }
 
     public static class MetadataConfig {
@@ -214,11 +211,8 @@ public class ServiceDiscovery {
     }
 
     public static class SyncConfig {
-        private Integer heartbeatIntervalMs = 5000;
         private Integer syncTimeoutMs = 30000;
 
-        public Integer getHeartbeatIntervalMs() { return heartbeatIntervalMs; }
-        public void setHeartbeatIntervalMs(Integer heartbeatIntervalMs) { this.heartbeatIntervalMs = heartbeatIntervalMs; }
         public Integer getSyncTimeoutMs() { return syncTimeoutMs; }
         public void setSyncTimeoutMs(Integer syncTimeoutMs) { this.syncTimeoutMs = syncTimeoutMs; }
     }

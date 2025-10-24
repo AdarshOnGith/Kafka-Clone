@@ -304,12 +304,11 @@ def main():
     add_delay(2)  # Give time to read the topology
 
     print()
-    # return
     print("🧪 Running publish tests...")
     print("==========================")
     add_delay(1)
 
-    # Test single message publish (to leader - broker 1)
+    # Test single message publish (to leader - broker 101)
     print("Testing single message publish...")
     add_delay(0.5)
     if test_publish(8081, "single-message-publish.json"):
@@ -327,7 +326,7 @@ def main():
     add_delay(1)
 
     
-    # Test batch message publish (to leader - broker 1)
+    # Test batch message publish (to leader - broker 101)
     print("Testing batch message publish...")
     add_delay(0.5)
     if test_publish(8081, "batch-message-publish.json"):
@@ -347,8 +346,9 @@ def main():
     print("==========================")
     add_delay(1)
     
-    # Test consuming messages from test-topic (leader - broker 1)
-    print("Testing consume from test-topic partition 0 (leader - broker 1)...")
+    # return
+    # Test consuming messages from test-topic (leader - broker 101)
+    print("Testing consume from test-topic partition 0 (leader - broker 101)...")
     add_delay(0.5)
     consumed_test_topic, hwm_test_topic = test_consume(8081, "test-topic", 0, offset=0, max_messages=10, description=" (all messages)")
     if consumed_test_topic is not None:
@@ -410,8 +410,8 @@ def main():
     print("Testing consume from orders topic partitions...")
     add_delay(0.5)
     
-    # Consume from orders-0 (leader - broker 2, port 8082)
-    print("  📥 Testing orders partition 0 (broker 2)...")
+    # Consume from orders-0 (leader - broker 102, port 8082)
+    print("  📥 Testing orders partition 0 (broker 102)...")
     consumed_orders_p0, hwm_orders_p0 = test_consume(8082, "orders", 0, offset=0, max_messages=10, description=" (orders-0 all messages)")
     if consumed_orders_p0 is not None:
         print(f"  ✅ Orders-0 consume test passed - received {len(consumed_orders_p0)} messages, HWM: {hwm_orders_p0}")
@@ -428,8 +428,8 @@ def main():
     else:
         print("  ❌ Orders-0 consume test failed")
     
-    # Consume from orders-1 (leader - broker 3, port 8083)
-    print("  📥 Testing orders partition 1 (broker 3)...")
+    # Consume from orders-1 (leader - broker 103, port 8083)
+    print("  📥 Testing orders partition 1 (broker 103)...")
     consumed_orders_p1, hwm_orders_p1 = test_consume(8083, "orders", 1, offset=0, max_messages=10, description=" (orders-1 all messages)")
     if consumed_orders_p1 is not None:
         print(f"  ✅ Orders-1 consume test passed - received {len(consumed_orders_p1)} messages, HWM: {hwm_orders_p1}")
@@ -623,7 +623,7 @@ def test_produce_orders():
     print("  - HWM updated asynchronously after min.insync.replicas ack")
     print()
 
-    port_p0 = 8082  # Leader for orders-0
+    port_p0 = 8082  # Leader for orders-0 is broker 102
     order_msg_acks0 = {
         "topic": "orders",
         "partition": 0,
@@ -756,7 +756,7 @@ def test_produce_orders():
     print("  - HWM updated synchronously before response")
     print()
 
-    port_p1 = 8083  # Leader for orders-1
+    port_p1 = 8083  # Leader for orders-1 is broker 103
     order_msg_acks_all = {
         "topic": "orders",
         "partition": 1,

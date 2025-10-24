@@ -42,7 +42,6 @@ public class MetadataUpdateRequest {
         private String host;
         private Integer port;
         private boolean isAlive;
-        private Long lastHeartbeat;
     }
 
     /**

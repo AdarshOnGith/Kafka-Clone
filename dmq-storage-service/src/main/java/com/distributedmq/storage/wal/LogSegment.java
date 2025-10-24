@@ -24,6 +24,9 @@ public class LogSegment implements AutoCloseable {
     private FileOutputStream fileOutputStream;
     private DataOutputStream dataOutputStream;
     private long currentSize;
+    private long lastOffset = -1; // Track last offset in memory
+    private LogIndex index; // Index for fast offset lookups
+
     private static final int INT_BYTES = Integer.BYTES; // always 4 bytes in java
 
     // Read-write lock for concurrent access: multiple readers, single writer
@@ -42,6 +45,9 @@ public class LogSegment implements AutoCloseable {
         this.dataOutputStream = new DataOutputStream(fileOutputStream);
         this.currentSize = logFile.length();
 
+        // Initialize index
+        this.index = new LogIndex(baseDir, baseOffset);
+
         log.debug("Created log segment: {}", logFile.getPath());
     }
 
@@ -51,6 +57,9 @@ public class LogSegment implements AutoCloseable {
     public void append(Message message) throws IOException {
         rwLock.writeLock().lock();
         try {
+            // Get current position before writing
+            long position = currentSize;
+
             // Format: [size][crc][offset][timestamp][key_length][key][value_length][value]
             
             byte[] serialized = serializeMessage(message);
@@ -62,7 +71,13 @@ public class LogSegment implements AutoCloseable {
             dataOutputStream.writeInt(checksum);
             dataOutputStream.write(serialized);
             
-            currentSize += Integer.BYTES + Integer.BYTES + serialized.length;
+            int totalEntrySize = Integer.BYTES + Integer.BYTES + serialized.length;
+            currentSize += totalEntrySize;
+            lastOffset = message.getOffset(); // Update last offset in memory
+
+            // Index the message for fast lookups
+            index.indexMessage(message.getOffset(), position, totalEntrySize);
+
         } finally {
             rwLock.writeLock().unlock();
         }
@@ -76,6 +91,7 @@ public class LogSegment implements AutoCloseable {
         try {
             dataOutputStream.flush();
             fileOutputStream.getFD().sync();
+            index.flush();
         } finally {
             rwLock.writeLock().unlock();
         }
@@ -89,6 +105,7 @@ public class LogSegment implements AutoCloseable {
         rwLock.writeLock().lock();
         try {
             closeOutputStreams();
+            index.close();
         } finally {
             rwLock.writeLock().unlock();
         }
@@ -167,6 +184,11 @@ public class LogSegment implements AutoCloseable {
     public long getLastOffset() throws IOException {
         rwLock.readLock().lock();
         try {
+            // If we have the last offset in memory, return it
+            if (lastOffset >= 0) {
+                return lastOffset;
+            }
+            
             if (currentSize == 0) {
                 return -1; // No messages
             }
@@ -174,7 +196,7 @@ public class LogSegment implements AutoCloseable {
             try (FileInputStream fis = new FileInputStream(logFile);
                  DataInputStream dis = new DataInputStream(fis)) {
                 
-                long lastOffset = -1;
+                long foundLastOffset = -1;
                 while (dis.available() > 0) {
                     int totalLength = dis.readInt();
                     int expectedChecksum = dis.readInt();
@@ -193,10 +215,12 @@ public class LogSegment implements AutoCloseable {
                     }
                     
                     Message message = deserializeMessage(messageData);
-                    lastOffset = message.getOffset();
+                    foundLastOffset = message.getOffset();
                 }
                 
-                return lastOffset;
+                // Update in-memory cache
+                lastOffset = foundLastOffset;
+                return foundLastOffset;
             }
         } finally {
             rwLock.readLock().unlock();
@@ -215,8 +239,20 @@ public class LogSegment implements AutoCloseable {
                 return messages;
             }
             
+            // Use index to find starting position
+            long startPosition = index.findPosition(startOffset);
+            if (startPosition == -1) {
+                // No index entry, start from beginning
+                startPosition = 0;
+            }
+            
             try (FileInputStream fis = new FileInputStream(logFile);
                  DataInputStream dis = new DataInputStream(fis)) {
+                
+                // Seek to the approximate position
+                if (startPosition > 0) {
+                    fis.skip(startPosition);
+                }
                 
                 while (dis.available() > 0 && messages.size() < maxMessages) {
                     int totalLength = dis.readInt();

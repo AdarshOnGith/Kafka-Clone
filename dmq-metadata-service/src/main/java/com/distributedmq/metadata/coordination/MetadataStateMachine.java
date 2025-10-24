@@ -3,6 +3,9 @@ package com.distributedmq.metadata.coordination;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 /**
  * Metadata State Machine
  * Applies committed Raft log entries to the metadata state
@@ -14,42 +17,84 @@ import org.springframework.stereotype.Component;
 @Component
 public class MetadataStateMachine {
 
+    // In-memory metadata storage (will be replaced with proper persistence later)
+    private final Map<Integer, BrokerInfo> brokers = new ConcurrentHashMap<>();
+    private final Map<String, TopicInfo> topics = new ConcurrentHashMap<>();
+
     /**
      * Apply a committed log entry to the metadata state
      */
-    public void apply(RaftLogEntry entry) {
-        log.debug("Applying log entry at index: {} with term: {}", entry.getIndex(), entry.getTerm());
-        
-        // TODO: Switch on command type
-        // TODO: Apply CREATE_TOPIC commands
-        // TODO: Apply DELETE_TOPIC commands
-        // TODO: Apply UPDATE_PARTITION_LEADER commands
-        // TODO: Apply REGISTER_BROKER commands
-        // TODO: Apply UNREGISTER_BROKER commands
-        // TODO: Apply UPDATE_ISR commands
-        
-        switch (entry.getCommandType()) {
-            case CREATE_TOPIC:
-                // TODO: Create topic in metadata
-                break;
-            case DELETE_TOPIC:
-                // TODO: Delete topic from metadata
-                break;
-            case UPDATE_PARTITION_LEADER:
-                // TODO: Update partition leader
-                break;
-            case REGISTER_BROKER:
-                // TODO: Register broker in cluster
-                break;
-            case UNREGISTER_BROKER:
-                // TODO: Unregister broker
-                break;
-            case UPDATE_ISR:
-                // TODO: Update ISR for partition
-                break;
-            default:
-                log.warn("Unknown command type: {}", entry.getCommandType());
+    public void apply(Object command) {
+        if (command == null) {
+            log.warn("Received null command, ignoring");
+            return;
         }
+        
+        log.debug("Applying command: {}", command.getClass().getSimpleName());
+        
+        if (command instanceof RegisterBrokerCommand) {
+            applyRegisterBroker((RegisterBrokerCommand) command);
+        } else if (command instanceof UnregisterBrokerCommand) {
+            applyUnregisterBroker((UnregisterBrokerCommand) command);
+        } else {
+            log.warn("Unknown command type: {}", command.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Apply broker registration
+     */
+    private void applyRegisterBroker(RegisterBrokerCommand command) {
+        BrokerInfo brokerInfo = BrokerInfo.builder()
+                .brokerId(command.getBrokerId())
+                .host(command.getHost())
+                .port(command.getPort())
+                .registrationTime(command.getTimestamp())
+                .build();
+
+        brokers.put(command.getBrokerId(), brokerInfo);
+        log.info("Registered broker: id={}, address={}:{}, registeredAt={}",
+                command.getBrokerId(), command.getHost(), command.getPort(), command.getTimestamp());
+    }
+
+    /**
+     * Apply broker unregistration
+     */
+    private void applyUnregisterBroker(UnregisterBrokerCommand command) {
+        BrokerInfo removed = brokers.remove(command.getBrokerId());
+        if (removed != null) {
+            log.info("Unregistered broker: id={}", command.getBrokerId());
+        } else {
+            log.warn("Attempted to unregister unknown broker: id={}", command.getBrokerId());
+        }
+    }
+
+    /**
+     * Get broker information by ID
+     */
+    public BrokerInfo getBroker(int brokerId) {
+        return brokers.get(brokerId);
+    }
+
+    /**
+     * Get all registered brokers
+     */
+    public Map<Integer, BrokerInfo> getAllBrokers() {
+        return new ConcurrentHashMap<>(brokers);
+    }
+
+    /**
+     * Get topic information by name
+     */
+    public TopicInfo getTopic(String topicName) {
+        return topics.get(topicName);
+    }
+
+    /**
+     * Get all topics
+     */
+    public Map<String, TopicInfo> getAllTopics() {
+        return new ConcurrentHashMap<>(topics);
     }
 
     /**

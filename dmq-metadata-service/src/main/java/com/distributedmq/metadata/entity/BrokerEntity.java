@@ -38,9 +38,6 @@ public class BrokerEntity {
     @Column(name = "registered_at", nullable = false)
     private LocalDateTime registeredAt;
 
-    @Column(name = "last_heartbeat")
-    private LocalDateTime lastHeartbeat;
-
     @PrePersist
     protected void onCreate() {
         registeredAt = LocalDateTime.now();
@@ -51,7 +48,7 @@ public class BrokerEntity {
 
     @PreUpdate
     protected void onUpdate() {
-        // Update lastHeartbeat when status changes or heartbeat is received
+        // Update operations
     }
 
     public String getAddress() {

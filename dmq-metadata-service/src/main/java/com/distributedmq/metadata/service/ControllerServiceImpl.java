@@ -3,15 +3,25 @@ package com.distributedmq.metadata.service;
 import com.distributedmq.common.model.BrokerNode;
 import com.distributedmq.common.model.BrokerStatus;
 import com.distributedmq.common.model.PartitionMetadata;
+import com.distributedmq.metadata.coordination.RaftController;
+import com.distributedmq.metadata.coordination.RegisterBrokerCommand;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Implementation of ControllerService
@@ -22,38 +32,82 @@ import java.util.concurrent.ConcurrentMap;
 @RequiredArgsConstructor
 public class ControllerServiceImpl implements ControllerService {
 
+    private final RaftController raftController;
+    private final MetadataPushService metadataPushService;
+    private final com.distributedmq.metadata.coordination.MetadataStateMachine metadataStateMachine;
+
     // In-memory broker registry (should be persisted in production)
     private final ConcurrentMap<Integer, BrokerNode> brokerRegistry = new ConcurrentHashMap<>();
-    
-    // Heartbeat tracking
-    private final ConcurrentMap<Integer, Long> lastHeartbeat = new ConcurrentHashMap<>();
 
     // Partition metadata storage (topic -> partitionId -> PartitionMetadata)
     private final ConcurrentMap<String, ConcurrentMap<Integer, PartitionMetadata>> partitionRegistry = new ConcurrentHashMap<>();
 
-    private final MetadataPushService metadataPushService;
+    private final ScheduledExecutorService leadershipChecker = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r);
+        t.setName("leadership-checker");
+        t.setDaemon(true);
+        return t;
+    });
 
     @PostConstruct
-    public void initializeDefaultBrokers() {
+    public void init() {
+        log.info("ControllerServiceImpl initialized, waiting for Raft leadership...");
+
+        // Start checking for leadership periodically
+        leadershipChecker.scheduleWithFixedDelay(this::checkAndInitializeLeadership,
+                1, 2, TimeUnit.SECONDS); // Check every 2 seconds
+    }
+
+    /**
+     * Check if we have become the leader and initialize broker registration
+     */
+    private void checkAndInitializeLeadership() {
+        if (raftController.isControllerLeader()) {
+            log.info("Detected controller leadership, initializing default brokers...");
+            initializeDefaultBrokers();
+            leadershipChecker.shutdown(); // Stop checking once we're the leader
+        }
+    }
+
+    /**
+     * Initialize default brokers - only called after becoming Raft leader
+     */
+    private void initializeDefaultBrokers() {
+        log.info("Initializing default brokers through Raft consensus");
+
         // Add default brokers for development
-        registerBroker(BrokerNode.builder()
+        List<BrokerNode> defaultBrokers = Arrays.asList(
+            BrokerNode.builder()
                 .brokerId(1)
                 .host("localhost")
                 .port(8081)
                 .status(BrokerStatus.ONLINE)
-                .build());
-        registerBroker(BrokerNode.builder()
+                .build(),
+            BrokerNode.builder()
                 .brokerId(2)
                 .host("localhost")
                 .port(8082)
                 .status(BrokerStatus.ONLINE)
-                .build());
-        registerBroker(BrokerNode.builder()
+                .build(),
+            BrokerNode.builder()
                 .brokerId(3)
                 .host("localhost")
                 .port(8083)
                 .status(BrokerStatus.ONLINE)
-                .build());
+                .build()
+        );
+
+        for (BrokerNode broker : defaultBrokers) {
+            try {
+                registerBroker(broker);
+                log.info("Successfully registered default broker: {}", broker.getBrokerId());
+            } catch (Exception e) {
+                log.error("Failed to register default broker {}: {}", broker.getBrokerId(), e.getMessage());
+                // Continue with other brokers even if one fails
+            }
+        }
+
+        log.info("Default broker initialization completed");
     }
 
     @Override
@@ -196,27 +250,41 @@ public class ControllerServiceImpl implements ControllerService {
 
     @Override
     public List<BrokerNode> getActiveBrokers() {
-        return brokerRegistry.values().stream()
-                .filter(broker -> broker.getStatus() == BrokerStatus.ONLINE)
-                .collect(ArrayList::new, (list, broker) -> list.add(broker), ArrayList::addAll);
+        // Get brokers from Raft state machine
+        return metadataStateMachine.getAllBrokers().values().stream()
+                .map(brokerInfo -> BrokerNode.builder()
+                        .brokerId(brokerInfo.getBrokerId())
+                        .host(brokerInfo.getHost())
+                        .port(brokerInfo.getPort())
+                        .status(BrokerStatus.ONLINE) // All registered brokers are considered online
+                        .build())
+                .collect(Collectors.toList());
     }
 
     @Override
     public void registerBroker(BrokerNode broker) {
-        log.info("Registering broker: {}", broker.getBrokerId());
-        
-        brokerRegistry.put(broker.getBrokerId(), broker);
-        lastHeartbeat.put(broker.getBrokerId(), System.currentTimeMillis());
-        
-        log.info("Successfully registered broker: {}", broker.getBrokerId());
+        log.info("Registering broker via Raft consensus: {}", broker.getBrokerId());
 
-        // Push broker status change to storage nodes
+        // Only the leader can register brokers
+        if (!raftController.isControllerLeader()) {
+            throw new IllegalStateException("Only the Raft leader can register brokers");
+        }
+
+        // Create Raft command for broker registration
+        RegisterBrokerCommand command = RegisterBrokerCommand.builder()
+                .brokerId(broker.getBrokerId())
+                .host(broker.getHost())
+                .port(broker.getPort())
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        // Append to Raft log and wait for completion
         try {
-            metadataPushService.pushFullClusterMetadata(getActiveBrokers());
-            log.info("Successfully pushed broker registration update for broker {}", broker.getBrokerId());
+            raftController.appendCommand(command).get(30, TimeUnit.SECONDS);
+            log.info("Broker registration command committed to Raft log: {}", broker.getBrokerId());
         } catch (Exception e) {
-            log.error("Failed to push broker registration update for broker {}: {}", broker.getBrokerId(), e.getMessage());
-            // Don't fail registration if push fails
+            log.error("Failed to commit broker registration for {}: {}", broker.getBrokerId(), e.getMessage());
+            throw new RuntimeException("Failed to register broker through Raft consensus", e);
         }
     }
 
@@ -225,7 +293,6 @@ public class ControllerServiceImpl implements ControllerService {
         log.info("Unregistering broker: {}", brokerId);
         
         brokerRegistry.remove(brokerId);
-        lastHeartbeat.remove(brokerId);
         
         // Handle as broker failure
         handleBrokerFailure(brokerId);

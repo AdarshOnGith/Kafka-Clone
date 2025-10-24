@@ -37,7 +37,6 @@ public class ReplicationManager {
     private final RestTemplate restTemplate;
     private final StorageConfig config;
     private final MetadataStore metadataStore;
-    private final StorageService storageService;
 
     // Circuit breaker state per follower broker
     private final ConcurrentHashMap<Integer, CircuitBreakerState> circuitBreakers = new ConcurrentHashMap<>();
@@ -88,7 +87,7 @@ public class ReplicationManager {
      */
     public boolean replicateBatch(String topic, Integer partition,
                                   List<ProduceRequest.ProduceMessage> messages,
-                                  Long baseOffset, Integer requiredAcks) {
+                                  Long baseOffset, Integer requiredAcks, Long leaderHighWaterMark) {
 
         log.info("Starting replication for topic-partition {}-{} with {} messages, baseOffset: {}, requiredAcks: {}",
                 topic, partition, messages.size(), baseOffset, requiredAcks);
@@ -133,7 +132,7 @@ public class ReplicationManager {
                 .baseOffset(baseOffset)
                 .leaderId(config.getBroker().getId())
                 .leaderEpoch(metadataStore.getLeaderEpoch(topic, partition))
-                .leaderHighWaterMark(getCurrentHighWaterMark(topic, partition))
+                .leaderHighWaterMark(leaderHighWaterMark)
                 .timeoutMs((long) config.getReplication().getFetchMaxWaitMs())
                 .requiredAcks(requiredAcks)
                 .build();
@@ -298,18 +297,6 @@ public class ReplicationManager {
                     .errorCode(ReplicationAck.ErrorCode.REPLICATION_FAILED)
                     .errorMessage(replicationResponse != null ? replicationResponse.getErrorMessage() : "Unknown error")
                     .build();
-        }
-    }
-
-    /**
-     * Get current high water mark for a partition from storage service
-     */
-    private Long getCurrentHighWaterMark(String topic, Integer partition) {
-        try {
-            return storageService.getHighWaterMark(topic, partition);
-        } catch (Exception e) {
-            log.warn("Failed to get HWM for {}-{}: {}", topic, partition, e.getMessage());
-            return 0L;
         }
     }
 
