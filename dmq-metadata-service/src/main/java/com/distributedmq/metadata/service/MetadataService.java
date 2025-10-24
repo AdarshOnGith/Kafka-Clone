@@ -55,11 +55,6 @@ public interface MetadataService {
     void updateBrokerStatus(Integer brokerId, String status);
 
     /**
-     * Update topic metadata
-     */
-    void updateTopicMetadata(TopicMetadata metadata);
-
-    /**
      * Push all metadata to a requesting metadata service
      * Used for synchronization when a metadata service is out of sync
      */

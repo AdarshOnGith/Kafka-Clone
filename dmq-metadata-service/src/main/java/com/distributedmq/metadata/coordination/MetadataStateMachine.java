@@ -17,9 +17,10 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class MetadataStateMachine {
 
-    // In-memory metadata storage (will be replaced with proper persistence later)
+    // In-memory metadata storage (replicated via Raft consensus)
     private final Map<Integer, BrokerInfo> brokers = new ConcurrentHashMap<>();
     private final Map<String, TopicInfo> topics = new ConcurrentHashMap<>();
+    private final Map<String, Map<Integer, PartitionInfo>> partitions = new ConcurrentHashMap<>();
 
     /**
      * Apply a committed log entry to the metadata state
@@ -32,14 +33,61 @@ public class MetadataStateMachine {
         
         log.info("Applying command: {} of type {}", command, command.getClass().getSimpleName());
         
+        // Handle RegisterBrokerCommand
         if (command instanceof RegisterBrokerCommand) {
             RegisterBrokerCommand cmd = (RegisterBrokerCommand) command;
             log.info("Applying RegisterBrokerCommand: brokerId={}, host={}, port={}", 
                     cmd.getBrokerId(), cmd.getHost(), cmd.getPort());
             applyRegisterBroker(cmd);
             log.info("Successfully applied RegisterBrokerCommand for broker {}", cmd.getBrokerId());
-        } else if (command instanceof Map) {
-            // Handle deserialized Map (fallback for serialization issues)
+        } 
+        // Handle UnregisterBrokerCommand
+        else if (command instanceof UnregisterBrokerCommand) {
+            applyUnregisterBroker((UnregisterBrokerCommand) command);
+        }
+        // Handle RegisterTopicCommand
+        else if (command instanceof RegisterTopicCommand) {
+            RegisterTopicCommand cmd = (RegisterTopicCommand) command;
+            log.info("Applying RegisterTopicCommand: topic={}, partitions={}, replicationFactor={}", 
+                    cmd.getTopicName(), cmd.getPartitionCount(), cmd.getReplicationFactor());
+            applyRegisterTopic(cmd);
+            log.info("Successfully applied RegisterTopicCommand for topic {}", cmd.getTopicName());
+        }
+        // Handle AssignPartitionsCommand
+        else if (command instanceof AssignPartitionsCommand) {
+            AssignPartitionsCommand cmd = (AssignPartitionsCommand) command;
+            log.info("Applying AssignPartitionsCommand: topic={}, assignments={}", 
+                    cmd.getTopicName(), cmd.getAssignments().size());
+            applyAssignPartitions(cmd);
+            log.info("Successfully applied AssignPartitionsCommand for topic {}", cmd.getTopicName());
+        }
+        // Handle UpdatePartitionLeaderCommand
+        else if (command instanceof UpdatePartitionLeaderCommand) {
+            UpdatePartitionLeaderCommand cmd = (UpdatePartitionLeaderCommand) command;
+            log.info("Applying UpdatePartitionLeaderCommand: topic={}, partition={}, newLeader={}", 
+                    cmd.getTopicName(), cmd.getPartitionId(), cmd.getNewLeaderId());
+            applyUpdatePartitionLeader(cmd);
+            log.info("Successfully applied UpdatePartitionLeaderCommand for {}-{}", 
+                    cmd.getTopicName(), cmd.getPartitionId());
+        }
+        // Handle UpdateISRCommand
+        else if (command instanceof UpdateISRCommand) {
+            UpdateISRCommand cmd = (UpdateISRCommand) command;
+            log.info("Applying UpdateISRCommand: topic={}, partition={}, newISR={}", 
+                    cmd.getTopicName(), cmd.getPartitionId(), cmd.getNewISR());
+            applyUpdateISR(cmd);
+            log.info("Successfully applied UpdateISRCommand for {}-{}", 
+                    cmd.getTopicName(), cmd.getPartitionId());
+        }
+        // Handle DeleteTopicCommand
+        else if (command instanceof DeleteTopicCommand) {
+            DeleteTopicCommand cmd = (DeleteTopicCommand) command;
+            log.info("Applying DeleteTopicCommand: topic={}", cmd.getTopicName());
+            applyDeleteTopic(cmd);
+            log.info("Successfully applied DeleteTopicCommand for topic {}", cmd.getTopicName());
+        }
+        // Handle Map-based commands (fallback for serialization issues)
+        else if (command instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> map = (Map<String, Object>) command;
             if (map.containsKey("brokerId") && map.containsKey("host") && map.containsKey("port")) {
@@ -55,11 +103,9 @@ public class MetadataStateMachine {
             } else {
                 log.error("Unknown Map command structure: {}", map);
             }
-        } else if (command instanceof UnregisterBrokerCommand) {
-            applyUnregisterBroker((UnregisterBrokerCommand) command);
-        } else {
+        }
+        else {
             log.error("Unknown command type: {} - {}", command.getClass().getSimpleName(), command);
-            // Try to handle it as a string representation
             log.error("Command toString: {}", command.toString());
         }
     }
@@ -93,6 +139,113 @@ public class MetadataStateMachine {
     }
 
     /**
+     * Apply topic registration
+     */
+    private void applyRegisterTopic(RegisterTopicCommand command) {
+        TopicInfo topicInfo = TopicInfo.builder()
+                .topicName(command.getTopicName())
+                .partitionCount(command.getPartitionCount())
+                .replicationFactor(command.getReplicationFactor())
+                .config(command.getConfig())
+                .createdAt(command.getTimestamp())
+                .build();
+
+        topics.put(command.getTopicName(), topicInfo);
+        log.info("Registered topic: name={}, partitions={}, replicationFactor={}, createdAt={}",
+                command.getTopicName(), command.getPartitionCount(), 
+                command.getReplicationFactor(), command.getTimestamp());
+    }
+
+    /**
+     * Apply partition assignments
+     */
+    private void applyAssignPartitions(AssignPartitionsCommand command) {
+        Map<Integer, PartitionInfo> topicPartitions = partitions.computeIfAbsent(
+                command.getTopicName(), k -> new ConcurrentHashMap<>());
+
+        for (PartitionAssignment assignment : command.getAssignments()) {
+            PartitionInfo partitionInfo = PartitionInfo.builder()
+                    .topicName(command.getTopicName())
+                    .partitionId(assignment.getPartitionId())
+                    .leaderId(assignment.getLeaderId())
+                    .replicaIds(assignment.getReplicaIds())
+                    .isrIds(assignment.getIsrIds())
+                    .startOffset(0L)
+                    .endOffset(0L)
+                    .leaderEpoch(0L)
+                    .build();
+
+            topicPartitions.put(assignment.getPartitionId(), partitionInfo);
+            log.debug("Assigned partition: topic={}, partition={}, leader={}, replicas={}, isr={}",
+                    command.getTopicName(), assignment.getPartitionId(), 
+                    assignment.getLeaderId(), assignment.getReplicaIds(), assignment.getIsrIds());
+        }
+
+        log.info("Assigned {} partitions for topic: {}", 
+                command.getAssignments().size(), command.getTopicName());
+    }
+
+    /**
+     * Apply partition leader update
+     */
+    private void applyUpdatePartitionLeader(UpdatePartitionLeaderCommand command) {
+        Map<Integer, PartitionInfo> topicPartitions = partitions.get(command.getTopicName());
+        if (topicPartitions == null) {
+            log.warn("Cannot update partition leader - topic not found: {}", command.getTopicName());
+            return;
+        }
+
+        PartitionInfo partition = topicPartitions.get(command.getPartitionId());
+        if (partition == null) {
+            log.warn("Cannot update partition leader - partition not found: {}-{}", 
+                    command.getTopicName(), command.getPartitionId());
+            return;
+        }
+
+        partition.setLeaderId(command.getNewLeaderId());
+        partition.setLeaderEpoch(command.getLeaderEpoch());
+        log.info("Updated partition leader: topic={}, partition={}, newLeader={}, epoch={}",
+                command.getTopicName(), command.getPartitionId(), 
+                command.getNewLeaderId(), command.getLeaderEpoch());
+    }
+
+    /**
+     * Apply ISR update
+     */
+    private void applyUpdateISR(UpdateISRCommand command) {
+        Map<Integer, PartitionInfo> topicPartitions = partitions.get(command.getTopicName());
+        if (topicPartitions == null) {
+            log.warn("Cannot update ISR - topic not found: {}", command.getTopicName());
+            return;
+        }
+
+        PartitionInfo partition = topicPartitions.get(command.getPartitionId());
+        if (partition == null) {
+            log.warn("Cannot update ISR - partition not found: {}-{}", 
+                    command.getTopicName(), command.getPartitionId());
+            return;
+        }
+
+        partition.setIsrIds(command.getNewISR());
+        log.info("Updated ISR: topic={}, partition={}, newISR={}",
+                command.getTopicName(), command.getPartitionId(), command.getNewISR());
+    }
+
+    /**
+     * Apply topic deletion
+     */
+    private void applyDeleteTopic(DeleteTopicCommand command) {
+        TopicInfo removed = topics.remove(command.getTopicName());
+        if (removed != null) {
+            // Also remove all partition information
+            partitions.remove(command.getTopicName());
+            log.info("Deleted topic: name={}", command.getTopicName());
+        } else {
+            log.warn("Attempted to delete unknown topic: name={}", command.getTopicName());
+        }
+    }
+
+    /**
      * Get broker information by ID
      */
     public BrokerInfo getBroker(int brokerId) {
@@ -118,6 +271,63 @@ public class MetadataStateMachine {
      */
     public Map<String, TopicInfo> getAllTopics() {
         return new ConcurrentHashMap<>(topics);
+    }
+
+    /**
+     * Get partition information for a specific partition
+     */
+    public PartitionInfo getPartition(String topicName, int partitionId) {
+        Map<Integer, PartitionInfo> topicPartitions = partitions.get(topicName);
+        if (topicPartitions == null) {
+            return null;
+        }
+        return topicPartitions.get(partitionId);
+    }
+
+    /**
+     * Get all partitions for a topic
+     */
+    public Map<Integer, PartitionInfo> getPartitions(String topicName) {
+        Map<Integer, PartitionInfo> topicPartitions = partitions.get(topicName);
+        if (topicPartitions == null) {
+            return new ConcurrentHashMap<>();
+        }
+        return new ConcurrentHashMap<>(topicPartitions);
+    }
+
+    /**
+     * Get all partitions across all topics
+     */
+    public Map<String, Map<Integer, PartitionInfo>> getAllPartitions() {
+        return new ConcurrentHashMap<>(partitions);
+    }
+
+    /**
+     * Check if a topic exists
+     */
+    public boolean topicExists(String topicName) {
+        return topics.containsKey(topicName);
+    }
+
+    /**
+     * Check if a broker exists
+     */
+    public boolean brokerExists(int brokerId) {
+        return brokers.containsKey(brokerId);
+    }
+
+    /**
+     * Get count of registered brokers
+     */
+    public int getBrokerCount() {
+        return brokers.size();
+    }
+
+    /**
+     * Get count of topics
+     */
+    public int getTopicCount() {
+        return topics.size();
     }
 
     /**

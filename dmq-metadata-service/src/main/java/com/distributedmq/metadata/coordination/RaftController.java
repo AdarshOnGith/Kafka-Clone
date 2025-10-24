@@ -81,8 +81,9 @@ public class RaftController {
             return t;
         });
 
-        // Load persisted state
+        // Load persisted state and replay Raft log
         loadPersistedState();
+        replayRaftLog();
 
         // Start election timeout
         resetElectionTimeout();
@@ -127,16 +128,9 @@ public class RaftController {
                 this.commitIndex = persistedState.getCommitIndex();
                 log.info("Loaded persisted state: term={}, votedFor={}, commitIndex={}",
                         currentTerm, votedFor, commitIndex);
+            } else {
+                log.info("No persisted state found, starting fresh");
             }
-
-            // Load committed log entries and apply to state machine
-            List<RaftLogEntry> committedEntries = logPersistence.getEntries(1, commitIndex);
-            for (RaftLogEntry entry : committedEntries) {
-                stateMachine.apply(entry.getCommand());
-                lastApplied = entry.getIndex();
-            }
-            log.info("Applied {} committed log entries to state machine", committedEntries.size());
-
         } catch (Exception e) {
             log.error("Failed to load persisted state, starting fresh", e);
             // Start with clean state
@@ -144,6 +138,49 @@ public class RaftController {
             this.votedFor = null;
             this.commitIndex = 0;
             this.lastApplied = 0;
+        }
+    }
+
+    /**
+     * Replay Raft log to rebuild state machine
+     * This is the critical startup step - Raft log is source of truth
+     */
+    private void replayRaftLog() {
+        try {
+            long lastLogIndex = logPersistence.getLastLogIndex();
+            long startIndex = Math.max(1, lastApplied + 1);
+            
+            if (startIndex > lastLogIndex) {
+                log.info("No log entries to replay (lastApplied={}, lastLogIndex={})", lastApplied, lastLogIndex);
+                return;
+            }
+
+            log.info("Replaying Raft log from index {} to {} to rebuild state machine...", startIndex, lastLogIndex);
+            
+            int replayedCount = 0;
+            for (long index = startIndex; index <= lastLogIndex; index++) {
+                RaftLogEntry entry = logPersistence.getEntry(index);
+                if (entry != null) {
+                    // Apply command to state machine
+                    stateMachine.apply(entry.getCommand());
+                    lastApplied = index;
+                    replayedCount++;
+                    
+                    if (replayedCount % 100 == 0) {
+                        log.debug("Replayed {} log entries...", replayedCount);
+                    }
+                }
+            }
+            
+            log.info("Successfully replayed {} Raft log entries. State machine rebuilt from Raft log.", replayedCount);
+            log.info("State machine statistics: {} brokers, {} topics, {} total partitions",
+                    stateMachine.getBrokerCount(), 
+                    stateMachine.getTopicCount(),
+                    stateMachine.getAllPartitions().size());
+
+        } catch (Exception e) {
+            log.error("Failed to replay Raft log, state machine may be incomplete", e);
+            // Continue anyway - follower will catch up from leader
         }
     }
 
@@ -579,8 +616,16 @@ public class RaftController {
         pendingCommands.put(entry.getIndex(), commandFuture);
         commandTimestamps.put(entry.getIndex(), System.currentTimeMillis());
 
-        // Trigger replication to followers
-        sendHeartbeats();
+        // Single-node optimization: if no peers, commit immediately
+        if (raftConfig.getPeers().isEmpty()) {
+            log.debug("Single-node cluster detected, committing entry {} immediately", entry.getIndex());
+            commitIndex = entry.getIndex();
+            persistState();
+            applyCommittedEntries();
+        } else {
+            // Trigger replication to followers
+            sendHeartbeats();
+        }
 
         return commandFuture;
     }

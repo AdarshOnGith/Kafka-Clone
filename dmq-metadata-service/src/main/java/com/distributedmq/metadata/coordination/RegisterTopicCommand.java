@@ -9,19 +9,19 @@ import lombok.NoArgsConstructor;
 import java.io.Serializable;
 
 /**
- * Internal state representation of a topic in MetadataStateMachine
- * This is the in-memory state replicated across all metadata nodes via Raft
+ * Raft command for registering a new topic
+ * Submitted to Raft log for consensus across metadata service cluster
  */
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class TopicInfo implements Serializable {
+public class RegisterTopicCommand implements Serializable {
     private static final long serialVersionUID = 1L;
 
     private String topicName;
     private int partitionCount;
     private int replicationFactor;
     private TopicConfig config;
-    private long createdAt;
+    private long timestamp;
 }

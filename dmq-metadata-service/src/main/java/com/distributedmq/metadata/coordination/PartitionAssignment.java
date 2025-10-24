@@ -9,22 +9,18 @@ import java.io.Serializable;
 import java.util.List;
 
 /**
- * Internal state representation of a partition in MetadataStateMachine
- * This is the in-memory state replicated across all metadata nodes via Raft
+ * Represents a single partition's assignment to brokers
+ * Used in AssignPartitionsCommand
  */
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class PartitionInfo implements Serializable {
+public class PartitionAssignment implements Serializable {
     private static final long serialVersionUID = 1L;
 
-    private String topicName;
     private int partitionId;
     private int leaderId;
     private List<Integer> replicaIds;
     private List<Integer> isrIds; // In-Sync Replicas
-    private long startOffset;
-    private long endOffset;
-    private long leaderEpoch;
 }

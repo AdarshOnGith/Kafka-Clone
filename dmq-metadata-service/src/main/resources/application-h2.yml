@@ -1,0 +1,42 @@
+server:
+  port: ${SERVER_PORT:9091}
+
+spring:
+  application:
+    name: dmq-metadata-service
+
+  # H2 in-memory database for local testing
+  datasource:
+    url: jdbc:h2:mem:dmq_metadata;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.H2Dialect
+
+# Single-node KRaft configuration for testing
+kraft:
+  node-id: ${NODE_ID:1}
+  cluster:
+    nodes:
+      - id: 1
+        host: localhost
+        port: 9091
+
+        
+
+logging:
+  level:
+    com.distributedmq: DEBUG

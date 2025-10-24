@@ -11,14 +11,20 @@ import com.distributedmq.metadata.dto.RegisterBrokerRequest;
 import com.distributedmq.metadata.dto.BrokerResponse;
 import com.distributedmq.metadata.entity.TopicEntity;
 import com.distributedmq.metadata.entity.BrokerEntity;
+import com.distributedmq.metadata.entity.PartitionEntity;
 import com.distributedmq.metadata.repository.TopicRepository;
 import com.distributedmq.metadata.repository.BrokerRepository;
+import com.distributedmq.metadata.repository.PartitionRepository;
 import com.distributedmq.metadata.coordination.MetadataStateMachine;
 import com.distributedmq.metadata.coordination.BrokerInfo;
+import com.distributedmq.metadata.coordination.RegisterTopicCommand;
+import com.distributedmq.metadata.coordination.DeleteTopicCommand;
+import com.distributedmq.metadata.coordination.TopicInfo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
@@ -27,7 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.*;
 import java.util.stream.Collectors;
 import java.util.ArrayList;
 
@@ -42,6 +48,7 @@ public class MetadataServiceImpl implements MetadataService {
 
     private final TopicRepository topicRepository;
     private final BrokerRepository brokerRepository;
+    private final PartitionRepository partitionRepository;
     private final ControllerService controllerService;
     private final MetadataPushService metadataPushService;
     private final com.distributedmq.metadata.coordination.RaftController raftController;
@@ -73,11 +80,11 @@ public class MetadataServiceImpl implements MetadataService {
                     raftController.getControllerLeaderId());
         }
 
-        // Check if topic already exists
-        Optional<TopicEntity> existingTopic = topicRepository.findByTopicName(request.getTopicName());
-        if (existingTopic.isPresent()) {
+        // Check if topic already exists in state machine
+        if (metadataStateMachine.topicExists(request.getTopicName())) {
             log.info("Topic {} already exists, returning existing topic", request.getTopicName());
-            return existingTopic.get().toMetadata();
+            TopicInfo topicInfo = metadataStateMachine.getTopic(request.getTopicName());
+            return convertTopicInfoToMetadata(topicInfo);
         }
 
         // Create topic configuration with defaults
@@ -89,72 +96,284 @@ public class MetadataServiceImpl implements MetadataService {
                 .minInsyncReplicas(request.getMinInsyncReplicas() != null ? request.getMinInsyncReplicas() : 1)
                 .build();
 
-        // Create topic metadata
-        TopicMetadata metadata = TopicMetadata.builder()
-                .topicName(request.getTopicName())
-                .partitionCount(request.getPartitionCount())
-                .replicationFactor(request.getReplicationFactor())
-                .createdAt(System.currentTimeMillis())
-                .config(config)
-                .build();
+        // Step 1: Create RegisterTopicCommand and submit to Raft
+        RegisterTopicCommand registerCommand = new RegisterTopicCommand(
+                request.getTopicName(),
+                request.getPartitionCount(),
+                request.getReplicationFactor(),
+                config,
+                System.currentTimeMillis()
+        );
 
-        // Assign partitions to brokers via controller service
-        metadata.setPartitions(controllerService.assignPartitions(
+        try {
+            // Step 2: Submit to Raft and wait for commit
+            CompletableFuture<Void> registerFuture = raftController.appendCommand(registerCommand);
+            registerFuture.get(10, TimeUnit.SECONDS);
+            log.info("Topic {} registered via Raft consensus", request.getTopicName());
+        } catch (Exception e) {
+            log.error("Failed to register topic {} via Raft", request.getTopicName(), e);
+            throw new IllegalStateException("Failed to register topic via Raft consensus", e);
+        }
+
+        // Step 3: Assign partitions to brokers (this now uses Raft internally via AssignPartitionsCommand)
+        List<com.distributedmq.common.model.PartitionMetadata> partitions = controllerService.assignPartitions(
                 request.getTopicName(),
                 request.getPartitionCount(),
                 request.getReplicationFactor()
-        ));
+        );
 
-        // Persist to database
-        TopicEntity entity = TopicEntity.fromMetadata(metadata);
-        TopicEntity savedEntity = topicRepository.save(entity);
+        // Step 4: Async persist to database (leader only, non-blocking)
+        asyncPersistTopic(request.getTopicName());
+        asyncPersistPartitions(request.getTopicName());
 
-        log.info("Successfully created topic: {} with {} partitions", request.getTopicName(), request.getPartitionCount());
+        // Step 5: Build metadata from state machine
+        TopicInfo topicInfo = metadataStateMachine.getTopic(request.getTopicName());
+        TopicMetadata metadata = convertTopicInfoToMetadata(topicInfo);
+        metadata.setPartitions(partitions);
 
-        // TODO: Notify storage nodes to create partition directories
-        // This will be implemented when storage service metadata sync is added
-
-        // Push metadata to all nodes
+        // Step 6: Push metadata to storage services
         List<MetadataUpdateResponse> pushResponses = metadataPushService.pushTopicMetadata(metadata, controllerService.getActiveBrokers());
         long successCount = pushResponses.stream().filter(MetadataUpdateResponse::isSuccess).count();
         log.info("Topic metadata push completed: {}/{} storage nodes successful", successCount, pushResponses.size());
 
-        return savedEntity.toMetadata();
+        log.info("Successfully created topic: {} with {} partitions via Raft", request.getTopicName(), request.getPartitionCount());
+        return metadata;
+    }
+
+    /**
+     * Helper method to convert TopicInfo from state machine to TopicMetadata
+     */
+    private TopicMetadata convertTopicInfoToMetadata(TopicInfo topicInfo) {
+        return TopicMetadata.builder()
+                .topicName(topicInfo.getTopicName())
+                .partitionCount(topicInfo.getPartitionCount())
+                .replicationFactor(topicInfo.getReplicationFactor())
+                .config(topicInfo.getConfig())
+                .createdAt(topicInfo.getCreatedAt())
+                .build();
+    }
+
+    /**
+     * Async persist topic to database (leader only, non-blocking)
+     */
+    @Async("dbPersistenceExecutor")
+    private void asyncPersistTopic(String topicName) {
+        try {
+            // Only leader persists to database
+            if (!raftController.isControllerLeader()) {
+                log.debug("Skipping async persist on non-leader node for topic: {}", topicName);
+                return;
+            }
+
+            TopicInfo topicInfo = metadataStateMachine.getTopic(topicName);
+            if (topicInfo == null) {
+                log.warn("Cannot persist topic {} - not found in state machine", topicName);
+                return;
+            }
+
+            TopicMetadata metadata = convertTopicInfoToMetadata(topicInfo);
+            TopicEntity entity = TopicEntity.fromMetadata(metadata);
+            topicRepository.save(entity);
+            
+            log.info("Async persisted topic {} to database", topicName);
+        } catch (Exception e) {
+            log.error("Failed to async persist topic {} to database", topicName, e);
+            // Don't throw - this is async backup only, Raft log is source of truth
+        }
+    }
+
+    /**
+     * Async persist partitions to database (leader only, non-blocking)
+     */
+    @Async("dbPersistenceExecutor")
+    private void asyncPersistPartitions(String topicName) {
+        try {
+            // Only leader persists to database
+            if (!raftController.isControllerLeader()) {
+                log.debug("Skipping async partition persist on non-leader node for topic: {}", topicName);
+                return;
+            }
+
+            Map<Integer, com.distributedmq.metadata.coordination.PartitionInfo> partitionMap = 
+                    metadataStateMachine.getPartitions(topicName);
+            
+            if (partitionMap == null || partitionMap.isEmpty()) {
+                log.warn("Cannot persist partitions for topic {} - not found in state machine", topicName);
+                return;
+            }
+
+            int persistedCount = 0;
+            for (com.distributedmq.metadata.coordination.PartitionInfo partInfo : partitionMap.values()) {
+                // Check if partition already exists
+                Optional<PartitionEntity> existing = partitionRepository.findByTopicNameAndPartitionId(
+                        topicName, partInfo.getPartitionId());
+                
+                if (existing.isPresent()) {
+                    // Update existing partition
+                    PartitionEntity entity = existing.get();
+                    entity.updateFromPartitionInfo(partInfo);
+                    partitionRepository.save(entity);
+                } else {
+                    // Create new partition
+                    PartitionEntity entity = PartitionEntity.fromPartitionInfo(partInfo);
+                    partitionRepository.save(entity);
+                }
+                persistedCount++;
+            }
+            
+            log.info("Async persisted {} partitions for topic {} to database", persistedCount, topicName);
+        } catch (Exception e) {
+            log.error("Failed to async persist partitions for topic {} to database", topicName, e);
+            // Don't throw - this is async backup only, Raft log is source of truth
+        }
+    }
+
+    /**
+     * Async delete partitions from database (leader only, non-blocking)
+     */
+    @Async("dbPersistenceExecutor")
+    private void asyncDeletePartitions(String topicName) {
+        try {
+            // Only leader deletes from database
+            if (!raftController.isControllerLeader()) {
+                log.debug("Skipping async partition delete on non-leader node for topic: {}", topicName);
+                return;
+            }
+
+            long count = partitionRepository.countByTopicName(topicName);
+            if (count > 0) {
+                partitionRepository.deleteByTopicName(topicName);
+                log.info("Async deleted {} partitions for topic {} from database", count, topicName);
+            }
+        } catch (Exception e) {
+            log.error("Failed to async delete partitions for topic {} from database", topicName, e);
+            // Don't throw - this is async backup only, Raft log is source of truth
+        }
+    }
+
+    /**
+     * Async persist broker to database (leader only, non-blocking)
+     */
+    @Async("dbPersistenceExecutor")
+    private void asyncPersistBroker(int brokerId) {
+        try {
+            // Only leader persists to database
+            if (!raftController.isControllerLeader()) {
+                log.debug("Skipping async broker persist on non-leader node for broker: {}", brokerId);
+                return;
+            }
+
+            BrokerInfo brokerInfo = metadataStateMachine.getBroker(brokerId);
+            if (brokerInfo == null) {
+                log.warn("Cannot persist broker {} - not found in state machine", brokerId);
+                return;
+            }
+
+            // Check if broker already exists
+            Optional<BrokerEntity> existing = brokerRepository.findById(brokerId);
+            
+            if (existing.isPresent()) {
+                // Update existing broker
+                BrokerEntity entity = existing.get();
+                entity.setHost(brokerInfo.getHost());
+                entity.setPort(brokerInfo.getPort());
+                entity.setStatus("ONLINE");
+                brokerRepository.save(entity);
+                log.info("Async updated broker {} in database", brokerId);
+            } else {
+                // Create new broker
+                BrokerEntity entity = BrokerEntity.builder()
+                        .id(brokerId)
+                        .host(brokerInfo.getHost())
+                        .port(brokerInfo.getPort())
+                        .status("ONLINE")
+                        .build();
+                brokerRepository.save(entity);
+                log.info("Async persisted broker {} to database", brokerId);
+            }
+        } catch (Exception e) {
+            log.error("Failed to async persist broker {} to database", brokerId, e);
+            // Don't throw - this is async backup only, Raft log is source of truth
+        }
     }
 
     @Override
     public TopicMetadata getTopicMetadata(String topicName) {
         log.debug("Getting metadata for topic: {}", topicName);
 
-        // If this is not the active controller, read from cache
-        if (!raftController.isControllerLeader()) {
-            if (!hasSyncedData) {
-                log.debug("Non-active controller requested topic metadata but no synced data available. Triggering sync...");
-                synchronizeMetadataIfNeeded();
-                // After sync, data should be available in cache
-            }
-
-            TopicMetadata metadata = metadataCache.get(topicName);
-            if (metadata == null) {
-                throw new IllegalArgumentException("Topic not found: " + topicName);
-            }
-            return metadata;
-        }
-
-        // Active controller: read from database
-        Optional<TopicEntity> entity = topicRepository.findByTopicName(topicName);
-        if (entity.isEmpty()) {
+        // Read from state machine (works on all nodes - leader and followers)
+        TopicInfo topicInfo = metadataStateMachine.getTopic(topicName);
+        if (topicInfo == null) {
             throw new IllegalArgumentException("Topic not found: " + topicName);
         }
 
-        TopicMetadata metadata = entity.get().toMetadata();
+        // Convert TopicInfo to TopicMetadata
+        TopicMetadata metadata = convertTopicInfoToMetadata(topicInfo);
 
-        // Get current partition assignments from controller
-        metadata.setPartitions(controllerService.assignPartitions(
-                topicName,
-                metadata.getPartitionCount(),
-                metadata.getReplicationFactor()
-        ));
+        // Get partition information from state machine
+        Map<Integer, com.distributedmq.metadata.coordination.PartitionInfo> partitionMap = 
+                metadataStateMachine.getPartitions(topicName);
+        
+        if (partitionMap != null && !partitionMap.isEmpty()) {
+            List<com.distributedmq.common.model.PartitionMetadata> partitions = new ArrayList<>();
+            
+            for (com.distributedmq.metadata.coordination.PartitionInfo partInfo : partitionMap.values()) {
+                // Convert replica IDs to BrokerNodes
+                List<BrokerNode> replicas = new ArrayList<>();
+                for (Integer brokerId : partInfo.getReplicaIds()) {
+                    BrokerInfo brokerInfo = metadataStateMachine.getBroker(brokerId);
+                    if (brokerInfo != null) {
+                        replicas.add(BrokerNode.builder()
+                                .brokerId(brokerInfo.getBrokerId())
+                                .host(brokerInfo.getHost())
+                                .port(brokerInfo.getPort())
+                                .status(BrokerStatus.ONLINE)
+                                .build());
+                    }
+                }
+
+                // Convert ISR IDs to BrokerNodes
+                List<BrokerNode> isr = new ArrayList<>();
+                for (Integer brokerId : partInfo.getIsrIds()) {
+                    BrokerInfo brokerInfo = metadataStateMachine.getBroker(brokerId);
+                    if (brokerInfo != null) {
+                        isr.add(BrokerNode.builder()
+                                .brokerId(brokerInfo.getBrokerId())
+                                .host(brokerInfo.getHost())
+                                .port(brokerInfo.getPort())
+                                .status(BrokerStatus.ONLINE)
+                                .build());
+                    }
+                }
+
+                // Get leader node
+                BrokerNode leader = null;
+                BrokerInfo leaderInfo = metadataStateMachine.getBroker(partInfo.getLeaderId());
+                if (leaderInfo != null) {
+                    leader = BrokerNode.builder()
+                            .brokerId(leaderInfo.getBrokerId())
+                            .host(leaderInfo.getHost())
+                            .port(leaderInfo.getPort())
+                            .status(BrokerStatus.ONLINE)
+                            .build();
+                }
+
+                com.distributedmq.common.model.PartitionMetadata partMetadata = 
+                        com.distributedmq.common.model.PartitionMetadata.builder()
+                                .topicName(partInfo.getTopicName())
+                                .partitionId(partInfo.getPartitionId())
+                                .leader(leader)
+                                .replicas(replicas)
+                                .isr(isr)
+                                .startOffset(partInfo.getStartOffset())
+                                .endOffset(partInfo.getEndOffset())
+                                .build();
+                
+                partitions.add(partMetadata);
+            }
+            
+            metadata.setPartitions(partitions);
+        }
 
         return metadata;
     }
@@ -163,21 +382,9 @@ public class MetadataServiceImpl implements MetadataService {
     public List<String> listTopics() {
         log.debug("Listing all topics");
 
-        // If this is not the active controller, read from cache
-        if (!raftController.isControllerLeader()) {
-            if (!hasSyncedData) {
-                log.debug("Non-active controller requested topic list but no synced data available. Triggering sync...");
-                synchronizeMetadataIfNeeded();
-                // After sync, data should be available in cache
-            }
-
-            return List.copyOf(metadataCache.keySet());
-        }
-
-        // Active controller: read from database
-        return topicRepository.findAll().stream()
-                .map(TopicEntity::getTopicName)
-                .collect(Collectors.toList());
+        // Read from state machine (works on all nodes - leader and followers)
+        Map<String, TopicInfo> topics = metadataStateMachine.getAllTopics();
+        return new ArrayList<>(topics.keySet());
     }
 
     @Override
@@ -191,24 +398,40 @@ public class MetadataServiceImpl implements MetadataService {
                     raftController.getControllerLeaderId());
         }
 
-        Optional<TopicEntity> entity = topicRepository.findByTopicName(topicName);
-        if (entity.isEmpty()) {
+        // Check if topic exists in state machine
+        if (!metadataStateMachine.topicExists(topicName)) {
             throw new IllegalArgumentException("Topic not found: " + topicName);
         }
 
-        // Cleanup partitions via controller service
+        // Step 1: Create DeleteTopicCommand and submit to Raft
+        DeleteTopicCommand deleteCommand = new DeleteTopicCommand(topicName, System.currentTimeMillis());
+
+        try {
+            // Step 2: Submit to Raft and wait for commit
+            CompletableFuture<Void> deleteFuture = raftController.appendCommand(deleteCommand);
+            deleteFuture.get(10, TimeUnit.SECONDS);
+            log.info("Topic {} deleted via Raft consensus", topicName);
+        } catch (Exception e) {
+            log.error("Failed to delete topic {} via Raft", topicName, e);
+            throw new IllegalStateException("Failed to delete topic via Raft consensus", e);
+        }
+
+        // Step 3: Cleanup partitions via controller service
         controllerService.cleanupTopicPartitions(topicName);
 
-        // Delete from repository
-        topicRepository.delete(entity.get());
+        // Step 4: Async delete from database (leader only, non-blocking)
+        asyncDeleteTopic(topicName);
 
-        log.info("Successfully deleted topic: {}", topicName);
-
-        // TODO: Notify storage nodes to delete data
-        // This will be implemented when storage service metadata sync is added
-
-        // Push cluster metadata update (without the deleted topic) to storage nodes
+        // Step 5: Push cluster metadata update (without the deleted topic) to storage nodes
         try {
+            // Get all topics metadata from state machine
+            List<TopicMetadata> remainingTopics = new ArrayList<>();
+            Map<String, TopicInfo> allTopics = metadataStateMachine.getAllTopics();
+            for (TopicInfo topicInfo : allTopics.values()) {
+                TopicMetadata metadata = convertTopicInfoToMetadata(topicInfo);
+                remainingTopics.add(metadata);
+            }
+
             List<MetadataUpdateResponse> pushResponses = metadataPushService.pushFullClusterMetadata(controllerService.getActiveBrokers());
             long successCount = pushResponses.stream().filter(MetadataUpdateResponse::isSuccess).count();
             log.info("Cluster metadata push after topic deletion completed: {}/{} storage nodes successful", successCount, pushResponses.size());
@@ -216,39 +439,34 @@ public class MetadataServiceImpl implements MetadataService {
             log.error("Failed to push cluster metadata update after deleting topic {}: {}", topicName, e.getMessage());
             // Don't fail the deletion if push fails
         }
+
+        log.info("Successfully deleted topic: {}", topicName);
     }
 
-    @Override
-    @Transactional
-    public void updateTopicMetadata(TopicMetadata metadata) {
-        log.debug("Updating metadata for topic: {}", metadata.getTopicName());
-
-        // Only active controller can update topics
-        if (!raftController.isControllerLeader()) {
-            throw new IllegalStateException("Only active controller can update topics. Current leader: " +
-                    raftController.getControllerLeaderId());
-        }
-
-        Optional<TopicEntity> existingEntity = topicRepository.findByTopicName(metadata.getTopicName());
-        if (existingEntity.isEmpty()) {
-            throw new IllegalArgumentException("Topic not found: " + metadata.getTopicName());
-        }
-
-        TopicEntity entity = existingEntity.get();
-        entity.updateFromMetadata(metadata);
-
-        topicRepository.save(entity);
-
-        log.debug("Successfully updated metadata for topic: {}", metadata.getTopicName());
-
-        // Push updated metadata to storage nodes
+    /**
+     * Async delete topic from database (leader only, non-blocking)
+     */
+    @Async("dbPersistenceExecutor")
+    private void asyncDeleteTopic(String topicName) {
         try {
-            List<MetadataUpdateResponse> pushResponses = metadataPushService.pushTopicMetadata(metadata, controllerService.getActiveBrokers());
-            long successCount = pushResponses.stream().filter(MetadataUpdateResponse::isSuccess).count();
-            log.info("Topic metadata update push completed: {}/{} storage nodes successful", successCount, pushResponses.size());
+            // Only leader deletes from database
+            if (!raftController.isControllerLeader()) {
+                log.debug("Skipping async delete on non-leader node for topic: {}", topicName);
+                return;
+            }
+
+            // Delete partitions first
+            asyncDeletePartitions(topicName);
+
+            // Then delete topic
+            Optional<TopicEntity> entity = topicRepository.findByTopicName(topicName);
+            if (entity.isPresent()) {
+                topicRepository.delete(entity.get());
+                log.info("Async deleted topic {} from database", topicName);
+            }
         } catch (Exception e) {
-            log.error("Failed to push topic metadata update for {}: {}", metadata.getTopicName(), e.getMessage());
-            // Don't fail the update if push fails
+            log.error("Failed to async delete topic {} from database", topicName, e);
+            // Don't throw - this is async backup only, Raft log is source of truth
         }
     }
 
@@ -297,6 +515,9 @@ public class MetadataServiceImpl implements MetadataService {
         if (registeredBroker == null) {
             throw new RuntimeException("Broker registration failed - broker not found in state machine after Raft consensus");
         }
+
+        // Async persist broker to database (leader only, non-blocking)
+        asyncPersistBroker(request.getId());
 
         log.info("Successfully registered broker: {}", registeredBroker.getBrokerId());
 

@@ -5,6 +5,9 @@ import com.distributedmq.common.model.BrokerStatus;
 import com.distributedmq.common.model.PartitionMetadata;
 import com.distributedmq.metadata.coordination.RaftController;
 import com.distributedmq.metadata.coordination.RegisterBrokerCommand;
+import com.distributedmq.metadata.coordination.AssignPartitionsCommand;
+import com.distributedmq.metadata.coordination.PartitionAssignment;
+import com.distributedmq.metadata.coordination.BrokerInfo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -13,15 +16,8 @@ import javax.annotation.PostConstruct;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.stream.Collectors;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Implementation of ControllerService
@@ -115,50 +111,54 @@ public class ControllerServiceImpl implements ControllerService {
         log.info("Assigning {} partitions with replication factor {} for topic: {}",
                 partitionCount, replicationFactor, topicName);
 
-        // Get available storage nodes instead of all brokers
-        List<com.distributedmq.common.config.ServiceDiscovery.StorageServiceInfo> storageServices =
-            com.distributedmq.common.config.ServiceDiscovery.getAllStorageServices();
+        // Get available brokers from state machine (registered via Raft consensus)
+        List<BrokerInfo> availableBrokers = new ArrayList<>(metadataStateMachine.getAllBrokers().values());
 
-        if (storageServices.isEmpty()) {
-            throw new IllegalStateException("No storage services available for partition assignment");
+        if (availableBrokers.isEmpty()) {
+            throw new IllegalStateException("No brokers available for partition assignment");
         }
 
-        if (storageServices.size() < replicationFactor) {
+        if (availableBrokers.size() < replicationFactor) {
             throw new IllegalStateException(
-                String.format("Not enough storage services for replication factor %d. Available: %d",
-                    replicationFactor, storageServices.size()));
+                String.format("Not enough brokers for replication factor %d. Available: %d",
+                    replicationFactor, availableBrokers.size()));
         }
 
         List<PartitionMetadata> partitions = new ArrayList<>();
+        List<PartitionAssignment> assignments = new ArrayList<>();
 
         for (int partitionId = 0; partitionId < partitionCount; partitionId++) {
-            // Round-robin assignment across available storage nodes
-            int startIndex = partitionId % storageServices.size();
+            // Round-robin assignment across available brokers
+            int startIndex = partitionId % availableBrokers.size();
 
             // Select replicas based on replication factor
             List<BrokerNode> replicas = new ArrayList<>();
+            List<Integer> replicaIds = new ArrayList<>();
             for (int i = 0; i < replicationFactor; i++) {
-                int storageIndex = (startIndex + i) % storageServices.size();
-                com.distributedmq.common.config.ServiceDiscovery.StorageServiceInfo storageService =
-                    storageServices.get(storageIndex);
+                int brokerIndex = (startIndex + i) % availableBrokers.size();
+                BrokerInfo brokerInfo = availableBrokers.get(brokerIndex);
 
-                // Create broker node from storage service info
+                // Create broker node from broker info
                 BrokerNode brokerNode = BrokerNode.builder()
-                        .brokerId(storageService.getId())
-                        .host(storageService.getHost())
-                        .port(storageService.getPort())
+                        .brokerId(brokerInfo.getBrokerId())
+                        .host(brokerInfo.getHost())
+                        .port(brokerInfo.getPort())
                         .status(BrokerStatus.ONLINE)
                         .build();
 
                 replicas.add(brokerNode);
+                replicaIds.add(brokerInfo.getBrokerId());
             }
 
             // Assign first replica as leader
             BrokerNode leader = replicas.get(0);
+            int leaderId = replicaIds.get(0);
 
             // Initially all replicas are in ISR
             List<BrokerNode> isr = new ArrayList<>(replicas);
+            List<Integer> isrIds = new ArrayList<>(replicaIds);
 
+            // Create partition metadata for return value
             PartitionMetadata partition = PartitionMetadata.builder()
                     .topicName(topicName)
                     .partitionId(partitionId)
@@ -171,13 +171,41 @@ public class ControllerServiceImpl implements ControllerService {
 
             partitions.add(partition);
 
-            // Store in partition registry
+            // Create partition assignment for Raft command
+            PartitionAssignment assignment = new PartitionAssignment(
+                    partitionId,
+                    leaderId,
+                    replicaIds,
+                    isrIds
+            );
+            assignments.add(assignment);
+
+            // Store in partition registry (temporary until Raft commits)
             partitionRegistry.computeIfAbsent(topicName, k -> new ConcurrentHashMap<>())
                     .put(partitionId, partition);
         }
 
-        log.info("Successfully assigned {} partitions for topic: {} using {} storage services",
-                partitions.size(), topicName, storageServices.size());
+        // Submit partition assignments to Raft for consensus
+        AssignPartitionsCommand command = new AssignPartitionsCommand(
+                topicName,
+                assignments,
+                System.currentTimeMillis()
+        );
+
+        try {
+            // Submit to Raft and wait for commit (blocks until consensus achieved)
+            CompletableFuture<Void> future = raftController.appendCommand(command);
+            future.get(10, TimeUnit.SECONDS); // Wait with timeout
+            
+            log.info("Successfully assigned {} partitions for topic: {} via Raft consensus using {} brokers",
+                    partitions.size(), topicName, availableBrokers.size());
+        } catch (Exception e) {
+            log.error("Failed to commit partition assignments via Raft for topic: {}", topicName, e);
+            // Clean up temporary registry on failure
+            partitionRegistry.remove(topicName);
+            throw new IllegalStateException("Failed to assign partitions via Raft consensus", e);
+        }
+
         return partitions;
     }
 
