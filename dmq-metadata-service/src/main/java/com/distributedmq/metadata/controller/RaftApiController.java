@@ -71,4 +71,17 @@ public class RaftApiController {
 
         return ResponseEntity.ok(status);
     }
+    
+    /**
+     * Get current state machine statistics (for debugging)
+     */
+    @GetMapping("/state-machine/stats")
+    public ResponseEntity<java.util.Map<String, Object>> getStateMachineStats() {
+        java.util.Map<String, Object> stats = new java.util.HashMap<>();
+        stats.put("nodeId", raftController.getNodeId());
+        stats.put("topicCount", raftController.getStateMachine().getTopicCount());
+        stats.put("brokerCount", raftController.getStateMachine().getBrokerCount());
+        stats.put("allTopicNames", new java.util.ArrayList<>(raftController.getStateMachine().getAllTopics().keySet()));
+        return ResponseEntity.ok(stats);
+    }
 }

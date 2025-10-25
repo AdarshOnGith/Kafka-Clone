@@ -1,10 +1,14 @@
 package com.distributedmq.metadata.coordination;
 
+import com.distributedmq.common.model.TopicConfig;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * Metadata State Machine
@@ -90,6 +94,8 @@ public class MetadataStateMachine {
         else if (command instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> map = (Map<String, Object>) command;
+            
+            // Try RegisterBrokerCommand
             if (map.containsKey("brokerId") && map.containsKey("host") && map.containsKey("port")) {
                 log.info("Applying Map-based RegisterBrokerCommand: {}", map);
                 RegisterBrokerCommand cmd = RegisterBrokerCommand.builder()
@@ -100,7 +106,77 @@ public class MetadataStateMachine {
                         .build();
                 applyRegisterBroker(cmd);
                 log.info("Successfully applied Map-based RegisterBrokerCommand for broker {}", cmd.getBrokerId());
-            } else {
+            } 
+            // Try RegisterTopicCommand
+            else if (map.containsKey("topicName") && map.containsKey("partitionCount") && map.containsKey("replicationFactor")) {
+                log.info("Applying Map-based RegisterTopicCommand: {}", map);
+                
+                // Extract config if present
+                @SuppressWarnings("unchecked")
+                Map<String, Object> configMap = (Map<String, Object>) map.get("config");
+                TopicConfig config = null;
+                if (configMap != null) {
+                    Long retentionMs = configMap.containsKey("retentionMs") ? ((Number) configMap.get("retentionMs")).longValue() : 604800000L;
+                    Long retentionBytes = configMap.containsKey("retentionBytes") ? ((Number) configMap.get("retentionBytes")).longValue() : -1L;
+                    Integer segmentBytes = configMap.containsKey("segmentBytes") ? ((Number) configMap.get("segmentBytes")).intValue() : 1073741824;
+                    String compressionType = configMap.containsKey("compressionType") ? (String) configMap.get("compressionType") : "none";
+                    Integer minInsyncReplicas = configMap.containsKey("minInsyncReplicas") ? ((Number) configMap.get("minInsyncReplicas")).intValue() : 1;
+                    
+                    config = TopicConfig.builder()
+                            .retentionMs(retentionMs)
+                            .retentionBytes(retentionBytes)
+                            .segmentBytes(segmentBytes)
+                            .compressionType(compressionType)
+                            .minInsyncReplicas(minInsyncReplicas)
+                            .build();
+                }
+                
+                RegisterTopicCommand cmd = RegisterTopicCommand.builder()
+                        .topicName((String) map.get("topicName"))
+                        .partitionCount(((Number) map.get("partitionCount")).intValue())
+                        .replicationFactor(((Number) map.get("replicationFactor")).intValue())
+                        .config(config)
+                        .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
+                        .build();
+                applyRegisterTopic(cmd);
+                log.info("Successfully applied Map-based RegisterTopicCommand for topic {}", cmd.getTopicName());
+            }
+            // Try AssignPartitionsCommand
+            else if (map.containsKey("topicName") && map.containsKey("assignments")) {
+                log.info("Applying Map-based AssignPartitionsCommand: {}", map);
+                
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> assignmentsList = (List<Map<String, Object>>) map.get("assignments");
+                List<PartitionAssignment> assignments = new ArrayList<>();
+                
+                for (Map<String, Object> assignmentMap : assignmentsList) {
+                    @SuppressWarnings("unchecked")
+                    List<Integer> replicaIds = ((List<Number>) assignmentMap.get("replicaIds")).stream()
+                            .map(Number::intValue)
+                            .collect(Collectors.toList());
+                    @SuppressWarnings("unchecked")
+                    List<Integer> isrIds = ((List<Number>) assignmentMap.get("isrIds")).stream()
+                            .map(Number::intValue)
+                            .collect(Collectors.toList());
+                    
+                    PartitionAssignment assignment = PartitionAssignment.builder()
+                            .partitionId(((Number) assignmentMap.get("partitionId")).intValue())
+                            .leaderId(((Number) assignmentMap.get("leaderId")).intValue())
+                            .replicaIds(replicaIds)
+                            .isrIds(isrIds)
+                            .build();
+                    assignments.add(assignment);
+                }
+                
+                AssignPartitionsCommand cmd = AssignPartitionsCommand.builder()
+                        .topicName((String) map.get("topicName"))
+                        .assignments(assignments)
+                        .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
+                        .build();
+                applyAssignPartitions(cmd);
+                log.info("Successfully applied Map-based AssignPartitionsCommand for topic {}", cmd.getTopicName());
+            }
+            else {
                 log.error("Unknown Map command structure: {}", map);
             }
         }

@@ -659,6 +659,10 @@ public class RaftController {
     public Integer getNodeId() {
         return nodeId;
     }
+    
+    public MetadataStateMachine getStateMachine() {
+        return stateMachine;
+    }
 
     /**
      * Clean up timed-out pending commands
