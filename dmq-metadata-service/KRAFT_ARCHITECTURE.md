@@ -87,13 +87,13 @@ dmq:
       nodes:
         - id: 1
           host: localhost
-          port: 9093
+          port: 9091
         - id: 2
           host: localhost
-          port: 9094
+          port: 9092
         - id: 3
           host: localhost
-          port: 9095
+          port: 9093
     raft:
       election-timeout-ms: 5000      # 5-10 seconds randomized
       heartbeat-interval-ms: 1000    # Leader sends heartbeat every 1s

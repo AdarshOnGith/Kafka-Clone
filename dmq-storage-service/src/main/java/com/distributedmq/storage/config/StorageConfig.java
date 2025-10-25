@@ -73,7 +73,9 @@ public class StorageConfig {
     public static class ReplicationConfig {
         private Integer fetchMaxBytes = 1048576; // 1MB
         private Integer fetchMaxWaitMs = 500;
-        private Long replicaLagTimeMaxMs = 10000L;
+        private Long replicaLagTimeMaxMs = 10000L;      // 10 seconds - time threshold
+        private Long replicaLagMaxMessages = 4000L;     // Phase 1: ISR Lag Monitoring - message threshold
+        private Long lagReportIntervalMs = 15000L;      // Phase 2: ISR Lag Reporting - report every 15 seconds
         private Integer minInsyncReplicas = 1; // Minimum ISR required for HW advancement
     }
 

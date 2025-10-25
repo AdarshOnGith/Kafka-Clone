@@ -403,6 +403,9 @@ public class StorageServiceImpl implements StorageService {
         // Get current high water mark for this partition
         long currentHwm = getHighWaterMark(request.getTopic(), request.getPartition());
         
+        // Phase 1: ISR Lag Monitoring - Get leader's LEO
+        long leaderLEO = getLogEndOffset(request.getTopic(), request.getPartition());
+        
         // For acks=-1, we need all ISR replicas to acknowledge
         boolean replicationSuccess = replicationManager.replicateBatch(
                 request.getTopic(),
@@ -410,7 +413,8 @@ public class StorageServiceImpl implements StorageService {
                 request.getMessages(),
                 baseOffset,
                 StorageConfig.ACKS_ALL,
-                currentHwm
+                currentHwm,
+                leaderLEO // Phase 1: Pass LEO to followers
         );
         
         // Get ISR information for detailed result
@@ -476,13 +480,15 @@ public class StorageServiceImpl implements StorageService {
         CompletableFuture.runAsync(() -> {
             try {
                 long currentHwm = getHighWaterMark(request.getTopic(), request.getPartition());
+                long leaderLEO = getLogEndOffset(request.getTopic(), request.getPartition()); // Phase 1: Get LEO
                 boolean replicationSuccess = replicationManager.replicateBatch(
                     request.getTopic(),
                     request.getPartition(),
                     request.getMessages(),
                     finalBaseOffset,
                     StorageConfig.ACKS_NONE,
-                    currentHwm
+                    currentHwm,
+                    leaderLEO // Phase 1: Pass LEO
                 );
                 log.debug("Async replication initiated for {}-{} at offset {} (acks=0), success: {}",
                          request.getTopic(), request.getPartition(), finalBaseOffset, replicationSuccess);
@@ -557,13 +563,15 @@ public class StorageServiceImpl implements StorageService {
         CompletableFuture.runAsync(() -> {
             try {
                 long currentHwm = getHighWaterMark(request.getTopic(), request.getPartition());
+                long leaderLEO = getLogEndOffset(request.getTopic(), request.getPartition()); // Phase 1: Get LEO
                 boolean replicationSuccess = replicationManager.replicateBatch(
                     request.getTopic(),
                     request.getPartition(),
                     request.getMessages(),
                     finalBaseOffset,
                     StorageConfig.ACKS_LEADER,
-                    currentHwm
+                    currentHwm,
+                    leaderLEO // Phase 1: Pass LEO
                 );
                 log.debug("Async replication initiated for {}-{} at offset {} (acks=1), success: {}",
                          request.getTopic(), request.getPartition(), finalBaseOffset, replicationSuccess);

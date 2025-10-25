@@ -37,6 +37,7 @@ public class ReplicationManager {
     private final RestTemplate restTemplate;
     private final StorageConfig config;
     private final MetadataStore metadataStore;
+    private final ReplicaLagTracker lagTracker; // Phase 1: ISR Lag Monitoring
 
     // Circuit breaker state per follower broker
     private final ConcurrentHashMap<Integer, CircuitBreakerState> circuitBreakers = new ConcurrentHashMap<>();
@@ -87,10 +88,11 @@ public class ReplicationManager {
      */
     public boolean replicateBatch(String topic, Integer partition,
                                   List<ProduceRequest.ProduceMessage> messages,
-                                  Long baseOffset, Integer requiredAcks, Long leaderHighWaterMark) {
+                                  Long baseOffset, Integer requiredAcks, Long leaderHighWaterMark,
+                                  Long leaderLogEndOffset) { // Phase 1: Added LEO parameter
 
-        log.info("Starting replication for topic-partition {}-{} with {} messages, baseOffset: {}, requiredAcks: {}",
-                topic, partition, messages.size(), baseOffset, requiredAcks);
+        log.info("Starting replication for topic-partition {}-{} with {} messages, baseOffset: {}, requiredAcks: {}, leaderLEO: {}",
+                topic, partition, messages.size(), baseOffset, requiredAcks, leaderLogEndOffset);
 
         // Step 1: Comprehensive request validation
         if (!validateReplicationRequest(topic, partition, messages, baseOffset, requiredAcks)) {
@@ -133,6 +135,7 @@ public class ReplicationManager {
                 .leaderId(config.getBroker().getId())
                 .leaderEpoch(metadataStore.getLeaderEpoch(topic, partition))
                 .leaderHighWaterMark(leaderHighWaterMark)
+                .leaderLogEndOffset(leaderLogEndOffset) // Phase 1: ISR Lag Monitoring - Include LEO
                 .timeoutMs((long) config.getReplication().getFetchMaxWaitMs())
                 .requiredAcks(requiredAcks)
                 .build();
@@ -339,6 +342,23 @@ public class ReplicationManager {
                 log.info("Successfully replicated {} messages for topic-partition {}-{}",
                         request.getMessages().size(), request.getTopic(), request.getPartition());
 
+                // Phase 1: ISR Lag Monitoring - Calculate follower LEO after successful replication
+                // Follower LEO = baseOffset + number of messages replicated
+                long followerLEO = request.getBaseOffset() + request.getMessages().size();
+                long leaderLEO = request.getLeaderLogEndOffset() != null ? request.getLeaderLogEndOffset() : followerLEO;
+                
+                // Record replication in lag tracker
+                lagTracker.recordReplication(
+                    request.getTopic(),
+                    request.getPartition(),
+                    leaderLEO,
+                    followerLEO
+                );
+                
+                // Get lag info to include in response
+                ReplicaLagTracker.LagInfo lagInfo = lagTracker.getLagInfo(
+                    request.getTopic(), request.getPartition());
+
                 return ReplicationResponse.builder()
                         .topic(request.getTopic())
                         .partition(request.getPartition())
@@ -348,6 +368,12 @@ public class ReplicationManager {
                         .success(true)
                         .errorCode(ReplicationResponse.ErrorCode.NONE)
                         .replicationTimeMs(System.currentTimeMillis())
+                        // Phase 1: ISR Lag Monitoring - Include lag metrics
+                        .followerLogEndOffset(followerLEO)
+                        .leaderLogEndOffset(leaderLEO)
+                        .offsetLag(lagInfo != null ? lagInfo.getOffsetLag() : 0L)
+                        .lastCaughtUpTimestamp(lagInfo != null ? lagInfo.getLastCaughtUpTimestamp() : System.currentTimeMillis())
+                        .timeSinceLastFetch(lagInfo != null ? lagInfo.getTimeSinceLastFetch() : 0L)
                         .build();
             } else {
                 log.error("Replication failed: {}", produceResponse.getErrorMessage());

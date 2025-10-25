@@ -24,6 +24,9 @@ public class ReplicationRequest {
 
     // Leader's current high water mark for lag calculation
     private Long leaderHighWaterMark;
+    
+    // Phase 1: ISR Lag Monitoring - Leader's Log End Offset for lag calculation
+    private Long leaderLogEndOffset; // Leader's LEO so follower can calculate lag
 
     // Replication metadata
     private Long timeoutMs;

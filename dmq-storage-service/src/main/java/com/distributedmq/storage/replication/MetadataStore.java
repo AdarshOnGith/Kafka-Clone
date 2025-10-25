@@ -67,6 +67,10 @@ public class MetadataStore {
         log.info("Metadata service URL set to: {}", url);
     }
 
+    public String getMetadataServiceUrl() {
+        return metadataServiceUrl;
+    }
+
     /**
      * Update metadata from metadata service (bulk update)
      * This replaces the current metadata with the new snapshot
@@ -194,6 +198,47 @@ public class MetadataStore {
     public Long getLeaderEpoch(String topic, Integer partition) {
         String key = getPartitionKey(topic, partition);
         return partitionLeaderEpochs.getOrDefault(key, 0L);
+    }
+
+    /**
+     * Phase 2: ISR Lag Reporting
+     * Get all partitions where this broker is a follower (not leader)
+     * Used by ISRLagReporter to identify partitions to report lag for
+     */
+    public List<PartitionInfo> getPartitionsWhereFollower() {
+        List<PartitionInfo> followerPartitions = new ArrayList<>();
+        
+        // Iterate through all known partitions
+        for (String partitionKey : partitionFollowers.keySet()) {
+            List<Integer> followers = partitionFollowers.get(partitionKey);
+            
+            // Check if this broker is in the followers list
+            if (followers != null && followers.contains(localBrokerId)) {
+                // Extract topic and partition from key
+                String[] parts = partitionKey.split("-");
+                if (parts.length >= 2) {
+                    String topic = parts[0];
+                    Integer partition = Integer.parseInt(parts[parts.length - 1]);
+                    
+                    // Get additional metadata
+                    Integer leaderId = partitionLeaders.get(partitionKey);
+                    List<Integer> isrIds = partitionISR.get(partitionKey);
+                    Long leaderEpoch = partitionLeaderEpochs.getOrDefault(partitionKey, 0L);
+                    
+                    followerPartitions.add(new PartitionInfo(
+                        topic, 
+                        partition, 
+                        leaderId,
+                        isrIds != null ? isrIds : Collections.emptyList(),
+                        leaderEpoch
+                    ));
+                }
+            }
+        }
+        
+        log.debug("Found {} partitions where broker {} is a follower", 
+                followerPartitions.size(), localBrokerId);
+        return followerPartitions;
     }
 
     /**
@@ -389,4 +434,32 @@ public class MetadataStore {
     // TODO: Add initialization methods for testing/basic setup (needed for replication flow)
     // - initializeTestMetadata() - populate sample brokers and partition leadership
     // - loadFromConfig() - load static metadata from configuration
+
+    /**
+     * Phase 2: ISR Lag Reporting
+     * Simple partition info holder for lag reporting
+     */
+    public static class PartitionInfo {
+        private final String topic;
+        private final Integer partition;
+        private final Integer leaderId;
+        private final List<Integer> isrIds;
+        private final Long leaderEpoch;
+        
+        public PartitionInfo(String topic, Integer partition, Integer leaderId, 
+                           List<Integer> isrIds, Long leaderEpoch) {
+            this.topic = topic;
+            this.partition = partition;
+            this.leaderId = leaderId;
+            this.isrIds = isrIds;
+            this.leaderEpoch = leaderEpoch;
+        }
+        
+        public String getTopic() { return topic; }
+        public Integer getPartition() { return partition; }
+        public Integer getLeaderId() { return leaderId; }
+        public List<Integer> getIsrIds() { return isrIds; }
+        public Long getLeaderEpoch() { return leaderEpoch; }
+    }
 }
+

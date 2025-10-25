@@ -140,9 +140,9 @@ dmq-storage ─────┘
 ## Port Allocation
 
 - **Metadata Service**: 8081 (HTTP), 2181 (ZooKeeper)
-- **Storage Service (Broker 1)**: 8082 (HTTP), 9092 (Broker)
-- **Storage Service (Broker 2)**: 8083 (HTTP), 9093 (Broker)
-- **Storage Service (Broker 3)**: 8084 (HTTP), 9094 (Broker)
+- **Storage Service (Broker 1)**: 8081 (HTTP), 9091 (Broker)
+- **Storage Service (Broker 2)**: 8082 (HTTP), 9092 (Broker)
+- **Storage Service (Broker 3)**: 8083 (HTTP), 9093 (Broker)
 
 ## Build & Run
 
@@ -167,13 +167,13 @@ mvn spring-boot:run -Dspring-boot.run.arguments="--broker.id=1 --server.port=808
 ### Run Multiple Brokers
 ```bash
 # Terminal 1 - Broker 1
-mvn spring-boot:run -Dspring-boot.run.arguments="--broker.id=1 --server.port=8082 --broker.port=9092"
+mvn spring-boot:run -Dspring-boot.run.arguments="--broker.id=1 --server.port=8081 --broker.port=9091"
 
 # Terminal 2 - Broker 2
-mvn spring-boot:run -Dspring-boot.run.arguments="--broker.id=2 --server.port=8083 --broker.port=9093"
+mvn spring-boot:run -Dspring-boot.run.arguments="--broker.id=2 --server.port=8082 --broker.port=9092"
 
 # Terminal 3 - Broker 3
-mvn spring-boot:run -Dspring-boot.run.arguments="--broker.id=3 --server.port=8084 --broker.port=9094"
+mvn spring-boot:run -Dspring-boot.run.arguments="--broker.id=3 --server.port=8083 --broker.port=9093"
 ```
 
 ## Implementation Roadmap
