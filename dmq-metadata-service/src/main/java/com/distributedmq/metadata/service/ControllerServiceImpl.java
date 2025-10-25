@@ -3,11 +3,16 @@ package com.distributedmq.metadata.service;
 import com.distributedmq.common.model.BrokerNode;
 import com.distributedmq.common.model.BrokerStatus;
 import com.distributedmq.common.model.PartitionMetadata;
+import com.distributedmq.metadata.config.ClusterTopologyConfig;
 import com.distributedmq.metadata.coordination.RaftController;
 import com.distributedmq.metadata.coordination.RegisterBrokerCommand;
 import com.distributedmq.metadata.coordination.AssignPartitionsCommand;
 import com.distributedmq.metadata.coordination.PartitionAssignment;
 import com.distributedmq.metadata.coordination.BrokerInfo;
+import com.distributedmq.metadata.coordination.PartitionInfo;
+import com.distributedmq.metadata.coordination.UpdatePartitionLeaderCommand;
+import com.distributedmq.metadata.coordination.UpdateISRCommand;
+import com.distributedmq.metadata.coordination.UpdateBrokerStatusCommand;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -16,6 +21,7 @@ import javax.annotation.PostConstruct;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
@@ -31,12 +37,12 @@ public class ControllerServiceImpl implements ControllerService {
     private final RaftController raftController;
     private final MetadataPushService metadataPushService;
     private final com.distributedmq.metadata.coordination.MetadataStateMachine metadataStateMachine;
+    private final ClusterTopologyConfig clusterTopologyConfig;
 
     // In-memory broker registry (should be persisted in production)
     private final ConcurrentMap<Integer, BrokerNode> brokerRegistry = new ConcurrentHashMap<>();
 
-    // Partition metadata storage (topic -> partitionId -> PartitionMetadata)
-    private final ConcurrentMap<String, ConcurrentMap<Integer, PartitionMetadata>> partitionRegistry = new ConcurrentHashMap<>();
+    // REMOVED: partitionRegistry - Using Raft state machine (MetadataStateMachine) as single source of truth
 
     private final ScheduledExecutorService leadershipChecker = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r);
@@ -59,51 +65,54 @@ public class ControllerServiceImpl implements ControllerService {
      */
     private void checkAndInitializeLeadership() {
         if (raftController.isControllerLeader()) {
-            log.info("Detected controller leadership, initializing default brokers...");
-            initializeDefaultBrokers();
+            log.info("Detected controller leadership, initializing brokers from config...");
+            initializeBrokersFromConfig();
             leadershipChecker.shutdown(); // Stop checking once we're the leader
         }
     }
 
     /**
-     * Initialize default brokers - only called after becoming Raft leader
+     * Initialize brokers from centralized config file - only called after becoming Raft leader
+     * Loads storage services from config/services.json
      */
-    private void initializeDefaultBrokers() {
-        log.info("Initializing default brokers through Raft consensus");
+    private void initializeBrokersFromConfig() {
+        log.info("Initializing storage service brokers from config/services.json through Raft consensus");
 
-        // Add default brokers for development
-        List<BrokerNode> defaultBrokers = Arrays.asList(
-            BrokerNode.builder()
-                .brokerId(1)
-                .host("localhost")
-                .port(8081)
-                .status(BrokerStatus.ONLINE)
-                .build(),
-            BrokerNode.builder()
-                .brokerId(2)
-                .host("localhost")
-                .port(8082)
-                .status(BrokerStatus.ONLINE)
-                .build(),
-            BrokerNode.builder()
-                .brokerId(3)
-                .host("localhost")
-                .port(8083)
-                .status(BrokerStatus.ONLINE)
-                .build()
-        );
-
-        for (BrokerNode broker : defaultBrokers) {
+        // Load brokers from centralized config
+        List<ClusterTopologyConfig.StorageServiceInfo> configBrokers = clusterTopologyConfig.getBrokers();
+        
+        if (configBrokers == null || configBrokers.isEmpty()) {
+            log.warn("No storage services found in config/services.json - cluster will have no brokers!");
+            log.warn("Please add storage services to config/services.json if you want brokers in the cluster");
+            return;
+        }
+        
+        log.info("Found {} storage service(s) in configuration", configBrokers.size());
+        
+        int successCount = 0;
+        int failCount = 0;
+        
+        for (ClusterTopologyConfig.StorageServiceInfo brokerInfo : configBrokers) {
             try {
+                BrokerNode broker = BrokerNode.builder()
+                    .brokerId(brokerInfo.getId())
+                    .host(brokerInfo.getHost())
+                    .port(brokerInfo.getPort())
+                    .status(BrokerStatus.ONLINE)
+                    .build();
+                    
                 registerBroker(broker);
-                log.info("Successfully registered default broker: {}", broker.getBrokerId());
+                successCount++;
+                log.info("Successfully registered storage service broker from config: id={}, address={}:{}", 
+                    broker.getBrokerId(), broker.getHost(), broker.getPort());
             } catch (Exception e) {
-                log.error("Failed to register default broker {}: {}", broker.getBrokerId(), e.getMessage());
+                failCount++;
+                log.error("Failed to register storage service broker {}: {}", brokerInfo.getId(), e.getMessage());
                 // Continue with other brokers even if one fails
             }
         }
 
-        log.info("Default broker initialization completed");
+        log.info("Broker initialization from config completed: {} succeeded, {} failed", successCount, failCount);
     }
 
     @Override
@@ -179,13 +188,10 @@ public class ControllerServiceImpl implements ControllerService {
                     isrIds
             );
             assignments.add(assignment);
-
-            // Store in partition registry (temporary until Raft commits)
-            partitionRegistry.computeIfAbsent(topicName, k -> new ConcurrentHashMap<>())
-                    .put(partitionId, partition);
         }
 
         // Submit partition assignments to Raft for consensus
+        // No local registry - Raft state machine is the single source of truth
         AssignPartitionsCommand command = new AssignPartitionsCommand(
                 topicName,
                 assignments,
@@ -201,8 +207,6 @@ public class ControllerServiceImpl implements ControllerService {
                     partitions.size(), topicName, availableBrokers.size());
         } catch (Exception e) {
             log.error("Failed to commit partition assignments via Raft for topic: {}", topicName, e);
-            // Clean up temporary registry on failure
-            partitionRegistry.remove(topicName);
             throw new IllegalStateException("Failed to assign partitions via Raft consensus", e);
         }
 
@@ -221,70 +225,307 @@ public class ControllerServiceImpl implements ControllerService {
 
     @Override
     public void handleBrokerFailure(Integer brokerId) {
-        log.warn("Handling failure for broker: {}", brokerId);
+        log.warn("========================================");
+        log.warn("Handling broker failure: {}", brokerId);
+        log.warn("========================================");
         
+        // Step 1: Mark broker as OFFLINE via Raft consensus (Phase 4)
+        try {
+            UpdateBrokerStatusCommand statusCommand = UpdateBrokerStatusCommand.builder()
+                .brokerId(brokerId)
+                .status(BrokerStatus.OFFLINE)
+                .lastHeartbeatTime(System.currentTimeMillis())
+                .timestamp(System.currentTimeMillis())
+                .build();
+            
+            raftController.appendCommand(statusCommand).get(10, TimeUnit.SECONDS);
+            log.info("Marked broker {} as OFFLINE in Raft state", brokerId);
+        } catch (Exception e) {
+            log.error("Failed to update broker {} status to OFFLINE in Raft: {}", brokerId, e.getMessage());
+            // Continue with failure handling even if status update fails
+        }
+        
+        // Also update local registry for immediate effect
         BrokerNode broker = brokerRegistry.get(brokerId);
         if (broker != null) {
             broker.setStatus(BrokerStatus.OFFLINE);
-            log.info("Marked broker {} as offline", brokerId);
+            log.info("Marked broker {} as OFFLINE in local registry", brokerId);
         }
         
-        // TODO: Re-elect leaders for partitions where this broker was leader
-        // TODO: Update ISR lists
-        // TODO: Trigger replication for under-replicated partitions
-
-        // Push broker status change to storage nodes
-        try {
-            metadataPushService.pushFullClusterMetadata(getActiveBrokers());
-            log.info("Successfully pushed broker failure update for broker {}", brokerId);
-        } catch (Exception e) {
-            log.error("Failed to push broker failure update for broker {}: {}", brokerId, e.getMessage());
-            // Don't fail failure handling if push fails
+        // Step 2: Find all partitions affected by this broker failure
+        Map<String, Map<Integer, PartitionInfo>> allPartitions = metadataStateMachine.getAllPartitions();
+        List<PartitionInfo> partitionsToReelect = new ArrayList<>();
+        List<PartitionInfo> partitionsToUpdateISR = new ArrayList<>();
+        
+        log.info("Scanning partitions for broker {} failure impact...", brokerId);
+        
+        for (Map.Entry<String, Map<Integer, PartitionInfo>> topicEntry : allPartitions.entrySet()) {
+            String topicName = topicEntry.getKey();
+            for (Map.Entry<Integer, PartitionInfo> partEntry : topicEntry.getValue().entrySet()) {
+                PartitionInfo partition = partEntry.getValue();
+                
+                // Check if failed broker is the leader
+                if (partition.getLeaderId() == brokerId) {
+                    log.warn("Found partition {}-{} where failed broker {} is LEADER", 
+                        topicName, partition.getPartitionId(), brokerId);
+                    partitionsToReelect.add(partition);
+                }
+                // Check if failed broker is in ISR (but not leader)
+                else if (partition.getIsrIds() != null && partition.getIsrIds().contains(brokerId)) {
+                    log.warn("Found partition {}-{} where failed broker {} is in ISR (not leader)", 
+                        topicName, partition.getPartitionId(), brokerId);
+                    partitionsToUpdateISR.add(partition);
+                }
+            }
         }
+        
+        log.info("Broker failure impact analysis:");
+        log.info("  - Partitions requiring leader re-election: {}", partitionsToReelect.size());
+        log.info("  - Partitions requiring ISR update: {}", partitionsToUpdateISR.size());
+        
+        // Step 3: Re-elect leaders for partitions where failed broker was leader
+        int reelectionSuccess = 0;
+        int reelectionFailed = 0;
+        
+        for (PartitionInfo partition : partitionsToReelect) {
+            try {
+                log.info("Re-electing leader for partition {}-{} (current leader {} failed)", 
+                    partition.getTopicName(), partition.getPartitionId(), brokerId);
+                
+                // First, remove failed broker from ISR
+                List<Integer> newISR = new ArrayList<>(partition.getIsrIds());
+                boolean removed = newISR.remove(Integer.valueOf(brokerId));
+                
+                if (removed) {
+                    log.info("Removed failed broker {} from ISR for partition {}-{}", 
+                        brokerId, partition.getTopicName(), partition.getPartitionId());
+                }
+                
+                // Check if ISR is empty after removal
+                if (newISR.isEmpty()) {
+                    log.error("CRITICAL: Partition {}-{} has NO remaining ISR after broker {} failure! Partition is OFFLINE", 
+                        partition.getTopicName(), partition.getPartitionId(), brokerId);
+                    log.error("This partition will remain unavailable until a replica catches up and joins ISR");
+                    reelectionFailed++;
+                    // TODO: Mark partition as offline in metadata, implement recovery mechanism
+                    continue;
+                }
+                
+                // Update ISR (remove failed broker) via Raft consensus
+                UpdateISRCommand isrCommand = UpdateISRCommand.builder()
+                    .topicName(partition.getTopicName())
+                    .partitionId(partition.getPartitionId())
+                    .newISR(newISR)
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+                
+                log.info("Submitting ISR update to Raft for partition {}-{}: removing broker {}", 
+                    partition.getTopicName(), partition.getPartitionId(), brokerId);
+                raftController.appendCommand(isrCommand).get(10, TimeUnit.SECONDS);
+                log.info("ISR update committed to Raft for partition {}-{}", 
+                    partition.getTopicName(), partition.getPartitionId());
+                
+                // Now elect new leader from remaining ISR
+                log.info("Electing new leader for partition {}-{} from ISR: {}", 
+                    partition.getTopicName(), partition.getPartitionId(), newISR);
+                electPartitionLeader(partition.getTopicName(), partition.getPartitionId());
+                
+                reelectionSuccess++;
+                log.info("✓ Successfully re-elected leader for partition {}-{}", 
+                    partition.getTopicName(), partition.getPartitionId());
+                    
+            } catch (Exception e) {
+                reelectionFailed++;
+                log.error("✗ Failed to re-elect leader for partition {}-{}: {}", 
+                    partition.getTopicName(), partition.getPartitionId(), e.getMessage(), e);
+            }
+        }
+        
+        // Step 4: Update ISR for partitions where failed broker was follower (not leader)
+        int isrUpdateSuccess = 0;
+        int isrUpdateFailed = 0;
+        
+        for (PartitionInfo partition : partitionsToUpdateISR) {
+            try {
+                log.info("Updating ISR for partition {}-{} to remove failed follower {}", 
+                    partition.getTopicName(), partition.getPartitionId(), brokerId);
+                
+                List<Integer> newISR = new ArrayList<>(partition.getIsrIds());
+                boolean removed = newISR.remove(Integer.valueOf(brokerId));
+                
+                if (!removed) {
+                    log.warn("Broker {} was not in ISR for partition {}-{}, skipping", 
+                        brokerId, partition.getTopicName(), partition.getPartitionId());
+                    continue;
+                }
+                
+                // Check if ISR shrinks below minimum (warning only, don't block)
+                if (newISR.size() < 2) {
+                    log.warn("WARNING: ISR for partition {}-{} shrunk to {} replicas after removing broker {}", 
+                        partition.getTopicName(), partition.getPartitionId(), newISR.size(), brokerId);
+                }
+                
+                UpdateISRCommand command = UpdateISRCommand.builder()
+                    .topicName(partition.getTopicName())
+                    .partitionId(partition.getPartitionId())
+                    .newISR(newISR)
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+                
+                raftController.appendCommand(command).get(10, TimeUnit.SECONDS);
+                isrUpdateSuccess++;
+                
+                log.info("✓ Updated ISR for partition {}-{}: removed broker {}, new ISR: {}", 
+                    partition.getTopicName(), partition.getPartitionId(), brokerId, newISR);
+                    
+            } catch (Exception e) {
+                isrUpdateFailed++;
+                log.error("✗ Failed to update ISR for partition {}-{}: {}", 
+                    partition.getTopicName(), partition.getPartitionId(), e.getMessage(), e);
+            }
+        }
+        
+        // Step 5: Push broker status change and metadata updates to all storage nodes
+        try {
+            log.info("Pushing broker failure updates to all storage nodes...");
+            metadataPushService.pushFullClusterMetadata(getActiveBrokers());
+            log.info("Successfully pushed broker failure update for broker {} to storage nodes", brokerId);
+        } catch (Exception e) {
+            log.error("Failed to push broker failure update for broker {} to storage nodes: {}", 
+                brokerId, e.getMessage());
+            // Don't fail failure handling if push fails - storage nodes will eventually sync
+        }
+        
+        // Step 6: Summary logging
+        log.warn("========================================");
+        log.warn("Broker failure handling completed for broker {}", brokerId);
+        log.warn("Summary:");
+        log.warn("  - Leader re-elections: {} succeeded, {} failed", reelectionSuccess, reelectionFailed);
+        log.warn("  - ISR updates: {} succeeded, {} failed", isrUpdateSuccess, isrUpdateFailed);
+        if (reelectionFailed > 0) {
+            log.error("  - {} partitions are OFFLINE due to no available ISR", reelectionFailed);
+        }
+        log.warn("========================================");
     }
 
     @Override
     public BrokerNode electPartitionLeader(String topicName, int partition) {
         log.info("Electing leader for partition: {}-{}", topicName, partition);
         
-        // TODO: Implement proper leader election logic
-        // For now, return first available broker
-        
-        List<BrokerNode> activeBrokers = getActiveBrokers();
-        if (!activeBrokers.isEmpty()) {
-            BrokerNode newLeader = activeBrokers.get(0);
-            
-            // Push partition leadership change to storage nodes
-            try {
-                // Note: In a real implementation, we'd need to get the current leader first
-                // For now, we'll assume leadership change and push with new leader
-                // The followers and ISR would need to be determined from current partition metadata
-                metadataPushService.pushPartitionLeadershipUpdate(
-                    topicName, partition, newLeader.getBrokerId(), 
-                    List.of(), List.of(newLeader.getBrokerId())); // Simplified for now
-                log.info("Successfully pushed leadership change for partition {}-{} to broker {}", 
-                    topicName, partition, newLeader.getBrokerId());
-            } catch (Exception e) {
-                log.error("Failed to push leadership change for partition {}-{}: {}", 
-                    topicName, partition, e.getMessage());
-                // Don't fail election if push fails
-            }
-            
-            return newLeader;
+        // Step 1: Get partition info from Raft state machine (source of truth)
+        PartitionInfo partitionInfo = metadataStateMachine.getPartition(topicName, partition);
+        if (partitionInfo == null) {
+            String errorMsg = String.format("Partition not found in state machine: %s-%d", topicName, partition);
+            log.error(errorMsg);
+            throw new IllegalStateException(errorMsg);
         }
         
-        throw new IllegalStateException("No active brokers available for leader election");
+        // Step 2: Get current ISR (in-sync replicas)
+        List<Integer> isr = partitionInfo.getIsrIds();
+        if (isr == null || isr.isEmpty()) {
+            String errorMsg = String.format("No ISR available for partition %s-%d - cannot elect leader", 
+                topicName, partition);
+            log.error(errorMsg);
+            throw new IllegalStateException(errorMsg);
+        }
+        
+        log.info("Current ISR for {}-{}: {}", topicName, partition, isr);
+        
+        // Step 3: Pick first replica in ISR as new leader (preferred leader election)
+        Integer newLeaderId = isr.get(0);
+        log.info("Selected broker {} as new leader for {}-{} (first in ISR)", 
+            newLeaderId, topicName, partition);
+        
+        // Step 4: Increment leader epoch (prevents split-brain)
+        long newEpoch = partitionInfo.getLeaderEpoch() + 1;
+        log.info("Incrementing leader epoch: {} -> {} for partition {}-{}", 
+            partitionInfo.getLeaderEpoch(), newEpoch, topicName, partition);
+        
+        // Step 5: Submit UpdatePartitionLeaderCommand to Raft for consensus
+        UpdatePartitionLeaderCommand command = UpdatePartitionLeaderCommand.builder()
+            .topicName(topicName)
+            .partitionId(partition)
+            .newLeaderId(newLeaderId)
+            .leaderEpoch(newEpoch)
+            .timestamp(System.currentTimeMillis())
+            .build();
+        
+        try {
+            log.info("Submitting UpdatePartitionLeaderCommand to Raft for {}-{}", topicName, partition);
+            raftController.appendCommand(command).get(30, TimeUnit.SECONDS);
+            log.info("Successfully committed leader election to Raft log for {}-{}", topicName, partition);
+        } catch (Exception e) {
+            log.error("Failed to commit leader election to Raft for {}-{}: {}", 
+                topicName, partition, e.getMessage(), e);
+            throw new RuntimeException("Failed to elect partition leader through Raft consensus", e);
+        }
+        
+        // Step 6: Get broker node for return value
+        BrokerInfo brokerInfo = metadataStateMachine.getBroker(newLeaderId);
+        if (brokerInfo == null) {
+            String errorMsg = String.format("Broker %d not found in state machine", newLeaderId);
+            log.error(errorMsg);
+            throw new IllegalStateException(errorMsg);
+        }
+        
+        BrokerNode newLeader = BrokerNode.builder()
+            .brokerId(brokerInfo.getBrokerId())
+            .host(brokerInfo.getHost())
+            .port(brokerInfo.getPort())
+            .status(BrokerStatus.ONLINE)
+            .build();
+        
+        // Step 7: Calculate followers (all replicas except leader)
+        List<Integer> followerIds = partitionInfo.getReplicaIds().stream()
+            .filter(id -> !id.equals(newLeaderId))
+            .collect(Collectors.toList());
+        
+        // Step 8: Push leadership change to storage nodes
+        try {
+            log.info("Pushing leadership change to storage nodes for {}-{}: leader={}, followers={}, isr={}", 
+                topicName, partition, newLeaderId, followerIds, isr);
+            metadataPushService.pushPartitionLeadershipUpdate(
+                topicName, partition, newLeaderId, followerIds, isr);
+            log.info("Successfully pushed leadership change for partition {}-{} to storage nodes", 
+                topicName, partition);
+        } catch (Exception e) {
+            log.error("Failed to push leadership change for partition {}-{}: {}", 
+                topicName, partition, e.getMessage());
+            // Don't fail election if push fails - Raft state is already updated
+            // Storage nodes will eventually sync via metadata pull
+        }
+        
+        log.info("Successfully elected broker {} as leader for partition {}-{} with epoch {}", 
+            newLeaderId, topicName, partition, newEpoch);
+        
+        return newLeader;
     }
 
     @Override
     public List<BrokerNode> getActiveBrokers() {
-        // Get brokers from Raft state machine
+        // Get brokers from Raft state machine (Phase 4: Use actual status from Raft)
+        return metadataStateMachine.getAllBrokers().values().stream()
+                .filter(brokerInfo -> brokerInfo.getStatus() == BrokerStatus.ONLINE) // Only ONLINE brokers
+                .map(brokerInfo -> BrokerNode.builder()
+                        .brokerId(brokerInfo.getBrokerId())
+                        .host(brokerInfo.getHost())
+                        .port(brokerInfo.getPort())
+                        .status(brokerInfo.getStatus()) // Use actual status from Raft state
+                        .build())
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Get all brokers (including offline brokers) from Raft state
+     * Phase 4: Returns complete broker list with actual status
+     */
+    public List<BrokerNode> getAllBrokers() {
         return metadataStateMachine.getAllBrokers().values().stream()
                 .map(brokerInfo -> BrokerNode.builder()
                         .brokerId(brokerInfo.getBrokerId())
                         .host(brokerInfo.getHost())
                         .port(brokerInfo.getPort())
-                        .status(BrokerStatus.ONLINE) // All registered brokers are considered online
+                        .status(brokerInfo.getStatus())
                         .build())
                 .collect(Collectors.toList());
     }
@@ -342,88 +583,97 @@ public class ControllerServiceImpl implements ControllerService {
         log.info("Updating partition leadership for {}-{}: leader={}, followers={}, isr={}",
                 topicName, partitionId, leaderId, followers, isr);
 
-        // Get or create partition metadata
-        ConcurrentMap<Integer, PartitionMetadata> topicPartitions = partitionRegistry.computeIfAbsent(topicName, k -> new ConcurrentHashMap<>());
-        PartitionMetadata partition = topicPartitions.get(partitionId);
-
+        // Query current partition state from Raft
+        PartitionInfo partition = metadataStateMachine.getPartition(topicName, partitionId);
+        
         if (partition == null) {
-            // Create new partition metadata if it doesn't exist
-            partition = PartitionMetadata.builder()
+            log.warn("Partition {}-{} not found in Raft state, cannot update leadership", topicName, partitionId);
+            return;
+        }
+
+        // Prepare updated partition info
+        Integer newLeaderId = (leaderId != null) ? leaderId : partition.getLeaderId();
+        List<Integer> newISR = (isr != null) ? isr : partition.getIsrIds();
+        
+        // Update leader via Raft consensus
+        if (leaderId != null && !leaderId.equals(partition.getLeaderId())) {
+            try {
+                log.info("Updating leader for {}-{} from {} to {} via Raft", 
+                    topicName, partitionId, partition.getLeaderId(), leaderId);
+                
+                UpdatePartitionLeaderCommand command = UpdatePartitionLeaderCommand.builder()
                     .topicName(topicName)
                     .partitionId(partitionId)
-                    .startOffset(0L)
-                    .endOffset(0L)
+                    .newLeaderId(leaderId)
+                    .leaderEpoch(partition.getLeaderEpoch() + 1)
+                    .timestamp(System.currentTimeMillis())
                     .build();
-        }
-
-        // Update leader
-        if (leaderId != null) {
-            BrokerNode leader = brokerRegistry.get(leaderId);
-            if (leader != null) {
-                partition.setLeader(leader);
+                
+                raftController.appendCommand(command).get(10, TimeUnit.SECONDS);
+                log.info("Leader update committed to Raft for {}-{}", topicName, partitionId);
+            } catch (Exception e) {
+                log.error("Failed to update leader for {}-{} via Raft: {}", topicName, partitionId, e.getMessage());
             }
         }
 
-        // Update replicas and ISR from the provided lists
-        if (followers != null && isr != null) {
-            List<BrokerNode> replicas = new ArrayList<>();
-            List<BrokerNode> isrNodes = new ArrayList<>();
-
-            // Add leader to replicas if not already included
-            if (leaderId != null && !followers.contains(leaderId)) {
-                followers = new ArrayList<>(followers);
-                followers.add(0, leaderId); // Leader should be first
+        // Update ISR via Raft consensus
+        if (isr != null && !isr.equals(partition.getIsrIds())) {
+            try {
+                log.info("Updating ISR for {}-{} from {} to {} via Raft", 
+                    topicName, partitionId, partition.getIsrIds(), isr);
+                
+                UpdateISRCommand command = UpdateISRCommand.builder()
+                    .topicName(topicName)
+                    .partitionId(partitionId)
+                    .newISR(isr)
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+                
+                raftController.appendCommand(command).get(10, TimeUnit.SECONDS);
+                log.info("ISR update committed to Raft for {}-{}", topicName, partitionId);
+            } catch (Exception e) {
+                log.error("Failed to update ISR for {}-{} via Raft: {}", topicName, partitionId, e.getMessage());
             }
-
-            // Convert broker IDs to BrokerNode objects
-            for (Integer brokerId : followers) {
-                BrokerNode broker = brokerRegistry.get(brokerId);
-                if (broker != null) {
-                    replicas.add(broker);
-                }
-            }
-
-            for (Integer brokerId : isr) {
-                BrokerNode broker = brokerRegistry.get(brokerId);
-                if (broker != null) {
-                    isrNodes.add(broker);
-                }
-            }
-
-            partition.setReplicas(replicas);
-            partition.setIsr(isrNodes);
         }
 
-        // Store updated partition
-        topicPartitions.put(partitionId, partition);
-
-        log.info("Partition leadership update processed for {}-{}", topicName, partitionId);
+        log.info("Partition leadership update completed for {}-{}", topicName, partitionId);
     }
 
     @Override
     public void removeFromISR(String topicName, int partitionId, Integer brokerId) {
         log.info("Removing broker {} from ISR for partition {}-{}", brokerId, topicName, partitionId);
 
-        ConcurrentMap<Integer, PartitionMetadata> topicPartitions = partitionRegistry.get(topicName);
-        if (topicPartitions == null) {
-            log.warn("Topic {} not found when removing from ISR", topicName);
-            return;
-        }
-
-        PartitionMetadata partition = topicPartitions.get(partitionId);
+        // Query partition from Raft state
+        PartitionInfo partition = metadataStateMachine.getPartition(topicName, partitionId);
         if (partition == null) {
-            log.warn("Partition {}-{} not found when removing from ISR", topicName, partitionId);
+            log.warn("Partition {}-{} not found in Raft state when removing from ISR", topicName, partitionId);
             return;
         }
 
-        List<BrokerNode> currentISR = partition.getIsr();
-        if (currentISR != null) {
-            boolean removed = currentISR.removeIf(broker -> broker.getBrokerId().equals(brokerId));
-            if (removed) {
-                log.info("Successfully removed broker {} from ISR for {}-{}", brokerId, topicName, partitionId);
-            } else {
-                log.debug("Broker {} was not in ISR for {}-{}", brokerId, topicName, partitionId);
-            }
+        List<Integer> currentISR = partition.getIsrIds();
+        if (currentISR == null || !currentISR.contains(brokerId)) {
+            log.debug("Broker {} is not in ISR for {}-{}, nothing to remove", brokerId, topicName, partitionId);
+            return;
+        }
+
+        // Create new ISR without the broker
+        List<Integer> newISR = new ArrayList<>(currentISR);
+        newISR.remove(Integer.valueOf(brokerId));
+        
+        // Update via Raft consensus
+        try {
+            UpdateISRCommand command = UpdateISRCommand.builder()
+                .topicName(topicName)
+                .partitionId(partitionId)
+                .newISR(newISR)
+                .timestamp(System.currentTimeMillis())
+                .build();
+            
+            raftController.appendCommand(command).get(10, TimeUnit.SECONDS);
+            log.info("Successfully removed broker {} from ISR for {}-{} via Raft", brokerId, topicName, partitionId);
+        } catch (Exception e) {
+            log.error("Failed to remove broker {} from ISR for {}-{} via Raft: {}", 
+                brokerId, topicName, partitionId, e.getMessage());
         }
     }
 
@@ -431,97 +681,79 @@ public class ControllerServiceImpl implements ControllerService {
     public void addToISR(String topicName, int partitionId, Integer brokerId) {
         log.info("Adding broker {} to ISR for partition {}-{}", brokerId, topicName, partitionId);
 
-        ConcurrentMap<Integer, PartitionMetadata> topicPartitions = partitionRegistry.get(topicName);
-        if (topicPartitions == null) {
-            log.warn("Topic {} not found when adding to ISR", topicName);
-            return;
-        }
-
-        PartitionMetadata partition = topicPartitions.get(partitionId);
+        // Query partition from Raft state
+        PartitionInfo partition = metadataStateMachine.getPartition(topicName, partitionId);
         if (partition == null) {
-            log.warn("Partition {}-{} not found when adding to ISR", topicName, partitionId);
+            log.warn("Partition {}-{} not found in Raft state when adding to ISR", topicName, partitionId);
             return;
         }
 
-        // Check if broker is in replicas
-        boolean isReplica = partition.getReplicas().stream()
-                .anyMatch(broker -> broker.getBrokerId().equals(brokerId));
-
-        if (!isReplica) {
+        // Check if broker is a replica
+        if (!partition.getReplicaIds().contains(brokerId)) {
             log.warn("Broker {} is not a replica for {}-{}, cannot add to ISR", brokerId, topicName, partitionId);
             return;
         }
 
-        List<BrokerNode> currentISR = partition.getIsr();
-        if (currentISR == null) {
-            currentISR = new ArrayList<>();
-            partition.setIsr(currentISR);
+        List<Integer> currentISR = partition.getIsrIds();
+        if (currentISR != null && currentISR.contains(brokerId)) {
+            log.debug("Broker {} is already in ISR for {}-{}", brokerId, topicName, partitionId);
+            return;
         }
 
-        boolean alreadyInISR = currentISR.stream()
-                .anyMatch(broker -> broker.getBrokerId().equals(brokerId));
-
-        if (!alreadyInISR) {
-            BrokerNode brokerNode = brokerRegistry.get(brokerId);
-            if (brokerNode != null) {
-                currentISR.add(brokerNode);
-                log.info("Successfully added broker {} to ISR for {}-{}", brokerId, topicName, partitionId);
-            } else {
-                log.warn("Broker {} not found in broker registry", brokerId);
-            }
-        } else {
-            log.debug("Broker {} is already in ISR for {}-{}", brokerId, topicName, partitionId);
+        // Create new ISR with the broker
+        List<Integer> newISR = new ArrayList<>(currentISR != null ? currentISR : new ArrayList<>());
+        newISR.add(brokerId);
+        
+        // Update via Raft consensus
+        try {
+            UpdateISRCommand command = UpdateISRCommand.builder()
+                .topicName(topicName)
+                .partitionId(partitionId)
+                .newISR(newISR)
+                .timestamp(System.currentTimeMillis())
+                .build();
+            
+            raftController.appendCommand(command).get(10, TimeUnit.SECONDS);
+            log.info("Successfully added broker {} to ISR for {}-{} via Raft", brokerId, topicName, partitionId);
+        } catch (Exception e) {
+            log.error("Failed to add broker {} to ISR for {}-{} via Raft: {}", 
+                brokerId, topicName, partitionId, e.getMessage());
         }
     }
 
     @Override
     public List<Integer> getISR(String topicName, int partitionId) {
-        ConcurrentMap<Integer, PartitionMetadata> topicPartitions = partitionRegistry.get(topicName);
-        if (topicPartitions == null) {
+        // Query partition from Raft state
+        PartitionInfo partition = metadataStateMachine.getPartition(topicName, partitionId);
+        if (partition == null || partition.getIsrIds() == null) {
             return new ArrayList<>();
         }
-
-        PartitionMetadata partition = topicPartitions.get(partitionId);
-        if (partition == null || partition.getIsr() == null) {
-            return new ArrayList<>();
-        }
-
-        return partition.getIsr().stream()
-                .map(BrokerNode::getBrokerId)
-                .collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
+        
+        return new ArrayList<>(partition.getIsrIds());
     }
 
     @Override
     public Integer getPartitionLeader(String topicName, int partitionId) {
-        ConcurrentMap<Integer, PartitionMetadata> topicPartitions = partitionRegistry.get(topicName);
-        if (topicPartitions == null) {
+        // Query partition from Raft state
+        PartitionInfo partition = metadataStateMachine.getPartition(topicName, partitionId);
+        if (partition == null) {
             return null;
         }
-
-        PartitionMetadata partition = topicPartitions.get(partitionId);
-        if (partition == null || partition.getLeader() == null) {
-            return null;
-        }
-
-        return partition.getLeader().getBrokerId();
+        
+        return partition.getLeaderId();
     }
 
     @Override
     public List<Integer> getPartitionFollowers(String topicName, int partitionId) {
-        ConcurrentMap<Integer, PartitionMetadata> topicPartitions = partitionRegistry.get(topicName);
-        if (topicPartitions == null) {
+        // Query partition from Raft state
+        PartitionInfo partition = metadataStateMachine.getPartition(topicName, partitionId);
+        if (partition == null || partition.getReplicaIds() == null) {
             return new ArrayList<>();
         }
 
-        PartitionMetadata partition = topicPartitions.get(partitionId);
-        if (partition == null || partition.getReplicas() == null) {
-            return new ArrayList<>();
-        }
-
-        Integer leaderId = getPartitionLeader(topicName, partitionId);
-        return partition.getReplicas().stream()
-                .map(BrokerNode::getBrokerId)
+        Integer leaderId = partition.getLeaderId();
+        return partition.getReplicaIds().stream()
                 .filter(id -> !id.equals(leaderId))
-                .collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
+                .collect(Collectors.toList());
     }
 }

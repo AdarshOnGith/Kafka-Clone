@@ -1,9 +1,12 @@
 package com.distributedmq.metadata.coordination;
 
+import com.distributedmq.metadata.config.ClusterTopologyConfig;
 import lombok.Getter;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.PostConstruct;
@@ -14,10 +17,11 @@ import java.util.stream.Collectors;
 /**
  * Raft Node Configuration
  * Provides cluster topology and node information for Raft consensus
+ * Loads metadata service nodes from centralized config/services.json
  */
 @Configuration
 @Getter
-@ConfigurationProperties(prefix = "kraft.cluster")
+@DependsOn("clusterTopologyConfig")
 public class RaftNodeConfig {
 
     @Value("${kraft.node-id}")
@@ -29,38 +33,64 @@ public class RaftNodeConfig {
     @Value("${kraft.cluster.host:localhost}")
     private String host;
 
-    private List<NodeConfig> nodes = new ArrayList<>();
+    @Autowired
+    private ClusterTopologyConfig clusterTopologyConfig;
 
     private List<NodeInfo> allNodes = new ArrayList<>();
     private List<NodeInfo> peers = new ArrayList<>();
 
     @PostConstruct
     public void init() {
-        // Convert node configs to NodeInfo objects
-        for (NodeConfig config : nodes) {
-            NodeInfo nodeInfo = new NodeInfo(config.getId(), config.getHost(), config.getPort());
+        // Load metadata service nodes from centralized config
+        List<ClusterTopologyConfig.MetadataServiceInfo> metadataServices = 
+            clusterTopologyConfig.getMetadataServices();
+        
+        if (metadataServices == null || metadataServices.isEmpty()) {
+            String errorMsg = "FATAL: No metadata services found in config/services.json! " +
+                "Raft cluster requires at least one metadata service node.";
+            System.err.println(errorMsg);
+            throw new IllegalStateException(errorMsg);
+        }
+
+        // Convert metadata services to NodeInfo objects
+        for (ClusterTopologyConfig.MetadataServiceInfo service : metadataServices) {
+            NodeInfo nodeInfo = new NodeInfo(service.getId(), service.getHost(), service.getPort());
             allNodes.add(nodeInfo);
 
             // Peers are all nodes except this one
-            if (config.getId() != nodeId) {
+            if (service.getId() != nodeId) {
                 peers.add(nodeInfo);
             }
         }
 
-        // If no nodes configured, use default single-node setup
-        if (allNodes.isEmpty()) {
-            allNodes.add(new NodeInfo(nodeId, host, port));
+        // Verify current node exists in config
+        boolean currentNodeExists = allNodes.stream()
+            .anyMatch(node -> node.getNodeId() == nodeId);
+        
+        if (!currentNodeExists) {
+            String errorMsg = "FATAL: Current node ID " + nodeId + 
+                " not found in config/services.json metadata-services list! " +
+                "Available node IDs: " + allNodes.stream()
+                    .map(n -> String.valueOf(n.getNodeId()))
+                    .collect(Collectors.joining(", "));
+            System.err.println(errorMsg);
+            throw new IllegalStateException(errorMsg);
         }
 
         // Log configuration
-        System.out.println("Raft Node Configuration:");
+        System.out.println("=".repeat(80));
+        System.out.println("Raft Node Configuration (loaded from config/services.json):");
         System.out.println("  Current Node: " + nodeId + " (" + host + ":" + port + ")");
-        System.out.println("  All Nodes: " + allNodes.stream()
-                .map(n -> n.getNodeId() + ":" + n.getHost() + ":" + n.getPort())
+        System.out.println("  All Metadata Service Nodes (" + allNodes.size() + "):");
+        for (NodeInfo node : allNodes) {
+            String marker = (node.getNodeId() == nodeId) ? " <- THIS NODE" : "";
+            System.out.println("    - Node " + node.getNodeId() + ": " + 
+                node.getHost() + ":" + node.getPort() + marker);
+        }
+        System.out.println("  Peer Nodes (" + peers.size() + "): " + peers.stream()
+                .map(n -> "Node " + n.getNodeId())
                 .collect(Collectors.joining(", ")));
-        System.out.println("  Peers: " + peers.stream()
-                .map(n -> n.getNodeId() + ":" + n.getHost() + ":" + n.getPort())
-                .collect(Collectors.joining(", ")));
+        System.out.println("=".repeat(80));
     }
 
     /**
@@ -85,26 +115,6 @@ public class RaftNodeConfig {
                 .filter(node -> node.getNodeId() == nodeId)
                 .findFirst()
                 .orElse(new NodeInfo(nodeId, host, port));
-    }
-
-    /**
-     * Node configuration from YAML
-     */
-    public static class NodeConfig {
-        private int id;
-        private String host;
-        private int port;
-
-        public int getId() { return id; }
-        public void setId(int id) { this.id = id; }
-        public String getHost() { return host; }
-        public void setHost(String host) { this.host = host; }
-        public int getPort() { return port; }
-        public void setPort(int port) { this.port = port; }
-    }
-
-    public void setNodes(List<NodeConfig> nodes) {
-        this.nodes = nodes;
     }
 
     /**

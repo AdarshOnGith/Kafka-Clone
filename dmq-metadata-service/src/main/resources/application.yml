@@ -44,20 +44,15 @@ spring:
 # KRaft Mode Configuration (Raft-based Controller)
 kraft:
   # This metadata service node configuration
+  # Node ID must match one of the metadata service IDs in config/services.json
   node-id: ${NODE_ID:1}
 
   # Raft cluster configuration
+  # NOTE: Cluster nodes are now loaded from config/services.json (metadata-services section)
+  # The 'cluster.nodes' section below is IGNORED and kept only for reference
   cluster:
-    nodes:
-      - id: 1
-        host: localhost
-        port: 9091
-      - id: 2
-        host: localhost
-        port: 9092
-      - id: 3
-        host: localhost
-        port: 9093
+    host: localhost  # Default host for this node
+    # nodes: []  # Loaded from config/services.json instead
 
   # Raft consensus settings
   raft:
@@ -71,6 +66,13 @@ controller:
   # Broker heartbeat settings
   broker-heartbeat-interval-ms: 3000
   broker-session-timeout-ms: 10000
+
+# Metadata Service Configuration
+metadata:
+  # Heartbeat monitoring (Phase 5)
+  heartbeat:
+    timeout-ms: 30000        # Broker considered dead after 30 seconds without heartbeat
+    check-interval-ms: 10000 # Check for stale heartbeats every 10 seconds
 
 # Service Pairing Configuration
 dmq:

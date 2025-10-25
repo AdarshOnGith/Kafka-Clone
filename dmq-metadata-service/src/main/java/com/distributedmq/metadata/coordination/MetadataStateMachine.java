@@ -77,11 +77,19 @@ public class MetadataStateMachine {
         // Handle UpdateISRCommand
         else if (command instanceof UpdateISRCommand) {
             UpdateISRCommand cmd = (UpdateISRCommand) command;
-            log.info("Applying UpdateISRCommand: topic={}, partition={}, newISR={}", 
+            log.info("Applying UpdateISRCommand: topic={}, partitionId={}, newISR={}", 
                     cmd.getTopicName(), cmd.getPartitionId(), cmd.getNewISR());
             applyUpdateISR(cmd);
-            log.info("Successfully applied UpdateISRCommand for {}-{}", 
+            log.info("Successfully applied UpdateISRCommand for partition {}-{}", 
                     cmd.getTopicName(), cmd.getPartitionId());
+        }
+        // Handle UpdateBrokerStatusCommand (Phase 4)
+        else if (command instanceof UpdateBrokerStatusCommand) {
+            UpdateBrokerStatusCommand cmd = (UpdateBrokerStatusCommand) command;
+            log.info("Applying UpdateBrokerStatusCommand: brokerId={}, status={}, heartbeatTime={}", 
+                    cmd.getBrokerId(), cmd.getStatus(), cmd.getLastHeartbeatTime());
+            applyUpdateBrokerStatus(cmd);
+            log.info("Successfully applied UpdateBrokerStatusCommand for broker {}", cmd.getBrokerId());
         }
         // Handle DeleteTopicCommand
         else if (command instanceof DeleteTopicCommand) {
@@ -256,11 +264,31 @@ public class MetadataStateMachine {
                 .host(command.getHost())
                 .port(command.getPort())
                 .registrationTime(command.getTimestamp())
+                .status(com.distributedmq.common.model.BrokerStatus.ONLINE)  // Initially ONLINE
+                .lastHeartbeatTime(command.getTimestamp())  // Registration time as first heartbeat
                 .build();
 
         brokers.put(command.getBrokerId(), brokerInfo);
-        log.info("Registered broker: id={}, address={}:{}, registeredAt={}",
+        log.info("Registered broker: id={}, address={}:{}, status=ONLINE, registeredAt={}",
                 command.getBrokerId(), command.getHost(), command.getPort(), command.getTimestamp());
+    }
+
+    /**
+     * Apply broker status update (Phase 4)
+     * Updates broker status and heartbeat timestamp
+     */
+    private void applyUpdateBrokerStatus(UpdateBrokerStatusCommand command) {
+        BrokerInfo broker = brokers.get(command.getBrokerId());
+        if (broker == null) {
+            log.warn("Cannot update status for unknown broker: id={}", command.getBrokerId());
+            return;
+        }
+
+        broker.setStatus(command.getStatus());
+        broker.setLastHeartbeatTime(command.getLastHeartbeatTime());
+        
+        log.info("Updated broker status: id={}, status={}, lastHeartbeat={}",
+                command.getBrokerId(), command.getStatus(), command.getLastHeartbeatTime());
     }
 
     /**
