@@ -176,6 +176,67 @@ public class MetadataStateMachine {
                 applyAssignPartitions(cmd);
                 log.info("Successfully applied Map-based AssignPartitionsCommand for topic {}", cmd.getTopicName());
             }
+            // Try DeleteTopicCommand (has topicName but NOT partitionCount/replicationFactor/assignments)
+            else if (map.containsKey("topicName") && 
+                     !map.containsKey("partitionCount") && 
+                     !map.containsKey("replicationFactor") && 
+                     !map.containsKey("assignments") &&
+                     !map.containsKey("partitionId")) {
+                log.info("Applying Map-based DeleteTopicCommand: {}", map);
+                
+                DeleteTopicCommand cmd = DeleteTopicCommand.builder()
+                        .topicName((String) map.get("topicName"))
+                        .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
+                        .build();
+                applyDeleteTopic(cmd);
+                log.info("Successfully applied Map-based DeleteTopicCommand for topic {}", cmd.getTopicName());
+            }
+            // Try UnregisterBrokerCommand
+            else if (map.containsKey("brokerId") && !map.containsKey("host") && !map.containsKey("port")) {
+                log.info("Applying Map-based UnregisterBrokerCommand: {}", map);
+                
+                UnregisterBrokerCommand cmd = UnregisterBrokerCommand.builder()
+                        .brokerId(((Number) map.get("brokerId")).intValue())
+                        .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
+                        .build();
+                applyUnregisterBroker(cmd);
+                log.info("Successfully applied Map-based UnregisterBrokerCommand for broker {}", cmd.getBrokerId());
+            }
+            // Try UpdatePartitionLeaderCommand
+            else if (map.containsKey("topicName") && map.containsKey("partitionId") && 
+                     map.containsKey("newLeaderId") && map.containsKey("leaderEpoch")) {
+                log.info("Applying Map-based UpdatePartitionLeaderCommand: {}", map);
+                
+                UpdatePartitionLeaderCommand cmd = UpdatePartitionLeaderCommand.builder()
+                        .topicName((String) map.get("topicName"))
+                        .partitionId(((Number) map.get("partitionId")).intValue())
+                        .newLeaderId(((Number) map.get("newLeaderId")).intValue())
+                        .leaderEpoch(((Number) map.get("leaderEpoch")).longValue())
+                        .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
+                        .build();
+                applyUpdatePartitionLeader(cmd);
+                log.info("Successfully applied Map-based UpdatePartitionLeaderCommand for {}-{}", 
+                        cmd.getTopicName(), cmd.getPartitionId());
+            }
+            // Try UpdateISRCommand
+            else if (map.containsKey("topicName") && map.containsKey("partitionId") && map.containsKey("newISR")) {
+                log.info("Applying Map-based UpdateISRCommand: {}", map);
+                
+                @SuppressWarnings("unchecked")
+                List<Integer> newISR = ((List<Number>) map.get("newISR")).stream()
+                        .map(Number::intValue)
+                        .collect(Collectors.toList());
+                
+                UpdateISRCommand cmd = UpdateISRCommand.builder()
+                        .topicName((String) map.get("topicName"))
+                        .partitionId(((Number) map.get("partitionId")).intValue())
+                        .newISR(newISR)
+                        .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
+                        .build();
+                applyUpdateISR(cmd);
+                log.info("Successfully applied Map-based UpdateISRCommand for {}-{}", 
+                        cmd.getTopicName(), cmd.getPartitionId());
+            }
             else {
                 log.error("Unknown Map command structure: {}", map);
             }
