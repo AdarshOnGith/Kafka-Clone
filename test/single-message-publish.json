@@ -1,0 +1,15 @@
+{
+  "topic": "test-topic",
+  "partition": 0,
+  "messages": [
+    {
+      "key": "user123",
+      "value": "SGVsbG8gV29ybGQ=",
+      "timestamp": 1703123456789
+    }
+  ],
+  "producerId": "producer-1",
+  "producerEpoch": 1,
+  "requiredAcks": -1,
+  "timeoutMs": 5000
+}

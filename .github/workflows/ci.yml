@@ -1,0 +1,38 @@
+name: CI - Maven Multi-Module
+
+on:
+  push:
+    branches: [ "main", "dev" ]
+  pull_request:
+    branches: [ "main", "dev" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 🧾 Checkout code
+      uses: actions/checkout@v4
+
+    - name: ☕ Set up Java 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: 📦 Build all modules
+      run: mvn clean install -DskipTests
+
+    - name: ✅ Run all tests
+      run: mvn test
+
+    - name: 🛡️ OWASP Dependency Check
+      run: mvn org.owasp:dependency-check-maven:check
+      continue-on-error: true  # don't fail early while testing this step
+
+    - name: 📤 Upload test reports
+      uses: actions/upload-artifact@v4
+
+      with:
+        name: test-reports
+        path: '**/target/surefire-reports/'

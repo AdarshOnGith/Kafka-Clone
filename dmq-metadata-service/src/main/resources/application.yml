@@ -1,0 +1,57 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: dmq-metadata-service
+  
+  datasource:
+    url: jdbc:postgresql://localhost:5432/dmq_metadata
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+  
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+# KRaft Mode Configuration (Raft-based Controller)
+kraft:
+  # This metadata service node configuration
+  node-id: ${NODE_ID:1}
+  
+  # Raft cluster configuration
+  cluster:
+    nodes:
+      - id: 1
+        host: localhost
+        port: 9093
+      - id: 2
+        host: localhost
+        port: 9094
+      - id: 3
+        host: localhost
+        port: 9095
+  
+  # Raft consensus settings
+  raft:
+    election-timeout-ms: 1000
+    heartbeat-interval-ms: 300
+    snapshot-interval-records: 10000
+    log-dir: ${LOG_DIR:./data/controller-logs}
+
+# Controller Configuration
+controller:
+  # Broker heartbeat settings
+  broker-heartbeat-interval-ms: 3000
+  broker-session-timeout-ms: 10000
+  
+logging:
+  level:
+    com.distributedmq: DEBUG
+    org.springframework: INFO
