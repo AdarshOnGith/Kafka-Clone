@@ -115,7 +115,7 @@ public class HeartbeatSender {
      * Runs every heartbeatIntervalMs (default: 5 seconds)
      * Also checks metadata version and triggers refresh if needed
      */
-    @Scheduled(fixedDelayString = "${dmq.storage.heartbeat.interval-ms:5000}", initialDelay = 5000)
+    @Scheduled(fixedDelayString = "${dmq.storage.heartbeat.interval-ms:5000}")
     public void sendHeartbeat() {
         if (!enabled) {
             log.trace("Heartbeat sender is disabled, skipping");
@@ -126,6 +126,9 @@ public class HeartbeatSender {
             log.debug("Heartbeat paused during rediscovery, skipping");
             return;
         }
+
+        // Sync controller info from MetadataStore (in case CONTROLLER_CHANGED notification updated it)
+        syncControllerInfoFromMetadataStore();
 
         if (currentControllerUrl == null) {
             log.error("No controller URL available, cannot send heartbeat");
@@ -153,7 +156,7 @@ public class HeartbeatSender {
                     heartbeatResponse = response.getBody();
                     successCount.incrementAndGet();
                     consecutiveHeartbeatFailures = 0;  // Reset on success
-                    log.debug("✅ Heartbeat sent successfully (attempt {}/{}): version={}", 
+                    log.debug("Heartbeat sent successfully (attempt {}/{}): version={}", 
                         attempt, retryAttempts, heartbeatResponse.getMetadataVersion());
                 } else {
                     log.warn("Heartbeat returned non-2xx status (attempt {}/{}): {}", 
@@ -238,6 +241,31 @@ public class HeartbeatSender {
         } finally {
             log.info("▶️ Resuming heartbeats");
             heartbeatPaused = false;
+        }
+    }
+    
+    /**
+     * Sync controller info from MetadataStore
+     * Called before each heartbeat to catch CONTROLLER_CHANGED notifications
+     */
+    private void syncControllerInfoFromMetadataStore() {
+        String metadataControllerUrl = metadataStore.getCurrentControllerUrl();
+        Integer metadataControllerId = metadataStore.getCurrentControllerId();
+        
+        // If MetadataStore has different controller info, sync it
+        if (metadataControllerUrl != null && !metadataControllerUrl.equals(currentControllerUrl)) {
+            String oldUrl = currentControllerUrl;
+            Integer oldId = currentControllerId;
+            
+            this.currentControllerUrl = metadataControllerUrl;
+            this.currentControllerId = metadataControllerId;
+            this.currentControllerTerm = metadataStore.getCurrentControllerTerm();
+            
+            log.info("🔄 Synced controller from MetadataStore: {} (ID={}) → {} (ID={}, term={})", 
+                oldUrl, oldId, currentControllerUrl, currentControllerId, currentControllerTerm);
+                
+            // Reset failure counter when switching to new controller
+            consecutiveHeartbeatFailures = 0;
         }
     }
     
@@ -334,12 +362,18 @@ public class HeartbeatSender {
      * Trigger metadata refresh by pulling from metadata service
      */
     private void triggerMetadataRefresh(String reason) {
+        if (currentControllerUrl == null) {
+            log.error("Cannot refresh metadata: controller URL not available (reason: {})", reason);
+            return;
+        }
+        
         try {
-            log.info("Refreshing metadata due to: {}", reason);
-            metadataStore.pullInitialMetadata();
-            log.info("✅ Metadata refresh completed successfully");
+            log.info("Refreshing metadata from controller {} due to: {}", currentControllerUrl, reason);
+            metadataStore.pullInitialMetadataFromController(currentControllerUrl);
+            log.info("Metadata refresh completed successfully");
         } catch (Exception e) {
-            log.error("Failed to refresh metadata: {}", e.getMessage(), e);
+            log.error("Failed to refresh metadata from controller {}: {}", 
+                    currentControllerUrl, e.getMessage(), e);
         }
     }
 

@@ -1147,6 +1147,27 @@ public class MetadataStore {
         return lastMetadataRefreshTime;
     }
 
+    /**
+     * Get current controller URL (for HeartbeatSender sync)
+     */
+    public String getCurrentControllerUrl() {
+        return currentControllerUrl;
+    }
+
+    /**
+     * Get current controller ID (for HeartbeatSender sync)
+     */
+    public Integer getCurrentControllerId() {
+        return currentControllerId;
+    }
+
+    /**
+     * Get current controller term (for HeartbeatSender sync)
+     */
+    public Long getCurrentControllerTerm() {
+        return currentControllerTerm;
+    }
+
     // TODO: Add methods to sync with metadata service (pull model - request metadata)
     // These will be implemented when metadata service is available
     // - requestMetadataRefresh() - Request latest metadata from metadata service
