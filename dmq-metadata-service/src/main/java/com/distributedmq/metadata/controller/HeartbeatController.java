@@ -1,10 +1,12 @@
 package com.distributedmq.metadata.controller;
 
 import com.distributedmq.common.dto.HeartbeatResponse;
+import com.distributedmq.metadata.coordination.RaftController;
 import com.distributedmq.metadata.service.HeartbeatService;
 import com.distributedmq.metadata.service.MetadataService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -20,6 +22,7 @@ public class HeartbeatController {
 
     private final HeartbeatService heartbeatService;
     private final MetadataService metadataService;
+    private final RaftController raftController;
 
     /**
      * Receive heartbeat from a storage service (broker)
@@ -31,6 +34,23 @@ public class HeartbeatController {
     @PostMapping("/{brokerId}")
     public ResponseEntity<HeartbeatResponse> receiveHeartbeat(@PathVariable Integer brokerId) {
         log.debug("Received heartbeat from broker: {}", brokerId);
+        
+        // CRITICAL: Only the controller leader should process heartbeats
+        if (!raftController.isControllerLeader()) {
+            Integer currentLeaderId = raftController.getControllerLeaderId();
+            log.warn("⚠️ Rejecting heartbeat from broker {} - this node is not the controller leader (current leader: {})", 
+                    brokerId, currentLeaderId);
+            
+            HeartbeatResponse response = HeartbeatResponse.builder()
+                    .success(false)
+                    .message("Not the controller leader. Current leader: " + currentLeaderId)
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+            
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .header("X-Controller-Leader", String.valueOf(currentLeaderId))
+                    .body(response);
+        }
         
         try {
             heartbeatService.processHeartbeat(brokerId);
