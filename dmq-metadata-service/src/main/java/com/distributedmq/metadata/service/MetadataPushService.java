@@ -8,11 +8,14 @@ import com.distributedmq.common.model.PartitionMetadata;
 import com.distributedmq.common.model.TopicMetadata;
 import com.distributedmq.metadata.config.ServicePairingConfig;
 import com.distributedmq.metadata.coordination.MetadataStateMachine;
+import com.distributedmq.metadata.coordination.TopicInfo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -60,17 +63,36 @@ public class MetadataPushService {
 
     /**
      * Push full cluster metadata to all storage nodes
-     * Used for initial sync or major updates
+     * Used for initial sync or major updates (e.g., topic deletion)
+     * Includes ALL current brokers and ALL current partitions for full snapshot replacement
      */
     public List<MetadataUpdateResponse> pushFullClusterMetadata(List<BrokerNode> activeBrokers) {
         log.info("Pushing full cluster metadata to all storage nodes");
 
-        // Create metadata update request with all brokers
+        // Get ALL current topics and their partitions from state machine
+        List<MetadataUpdateRequest.PartitionMetadata> allPartitions = new ArrayList<>();
+        Map<String, TopicInfo> allTopics = metadataStateMachine.getAllTopics();
+        
+        log.debug("Building full cluster snapshot from {} topics", allTopics.size());
+        
+        for (TopicInfo topicInfo : allTopics.values()) {
+            try {
+                TopicMetadata metadata = convertTopicInfoToMetadata(topicInfo);
+                for (com.distributedmq.common.model.PartitionMetadata partition : metadata.getPartitions()) {
+                    allPartitions.add(convertPartitionMetadata(partition));
+                }
+            } catch (Exception e) {
+                log.error("Failed to convert topic {} metadata: {}", topicInfo.getTopicName(), e.getMessage());
+            }
+        }
+
+        // Create complete cluster snapshot with ALL brokers and ALL partitions
         MetadataUpdateRequest request = MetadataUpdateRequest.builder()
                 .version(metadataStateMachine.getMetadataVersion())
                 .brokers(activeBrokers.stream()
                         .map(this::convertBrokerNodeToBrokerInfo)
                         .collect(Collectors.toList()))
+                .partitions(allPartitions)  // Include ALL current partitions for snapshot replacement
                 .timestamp(System.currentTimeMillis())
                 .build();
 
@@ -79,7 +101,8 @@ public class MetadataPushService {
                 .map(ServiceDiscovery.StorageServiceInfo::getUrl)
                 .collect(Collectors.toList());
 
-        log.info("Pushing cluster metadata to {} storage nodes: {}", storageUrls.size(), storageUrls);
+        log.info("Pushing complete cluster snapshot to {} storage nodes: {} brokers, {} partitions", 
+                storageUrls.size(), request.getBrokers().size(), allPartitions.size());
 
         // Push to all storage nodes
         List<MetadataUpdateResponse> responses = storageUrls.stream()
@@ -170,6 +193,67 @@ public class MetadataPushService {
                 .partitions(partitionMetadatas)
                 .timestamp(System.currentTimeMillis())
                 .build();
+    }
+
+    /**
+     * Convert TopicInfo from state machine to TopicMetadata with full partition information
+     */
+    private TopicMetadata convertTopicInfoToMetadata(com.distributedmq.metadata.coordination.TopicInfo topicInfo) {
+        TopicMetadata metadata = TopicMetadata.builder()
+                .topicName(topicInfo.getTopicName())
+                .partitionCount(topicInfo.getPartitionCount())
+                .replicationFactor(topicInfo.getReplicationFactor())
+                .config(topicInfo.getConfig())
+                .createdAt(topicInfo.getCreatedAt())
+                .build();
+
+        // Get partition information from state machine
+        Map<Integer, com.distributedmq.metadata.coordination.PartitionInfo> partitionMap = 
+                metadataStateMachine.getPartitions(topicInfo.getTopicName());
+        
+        if (partitionMap != null && !partitionMap.isEmpty()) {
+            List<com.distributedmq.common.model.PartitionMetadata> partitions = new ArrayList<>();
+            
+            for (com.distributedmq.metadata.coordination.PartitionInfo partInfo : partitionMap.values()) {
+                // Convert replica IDs to BrokerNodes
+                List<BrokerNode> replicas = new ArrayList<>();
+                for (Integer brokerId : partInfo.getReplicaIds()) {
+                    com.distributedmq.metadata.coordination.BrokerInfo brokerInfo = 
+                            metadataStateMachine.getBroker(brokerId);
+                    if (brokerInfo != null) {
+                        replicas.add(BrokerNode.builder()
+                                .brokerId(brokerInfo.getBrokerId())
+                                .host(brokerInfo.getHost())
+                                .port(brokerInfo.getPort())
+                                .status(com.distributedmq.common.model.BrokerStatus.ONLINE)
+                                .build());
+                    }
+                }
+                
+                // Leader is the first replica
+                BrokerNode leader = !replicas.isEmpty() ? replicas.get(0) : null;
+                
+                // ISR - for now, all replicas are in ISR
+                List<BrokerNode> isr = new ArrayList<>(replicas);
+                
+                if (leader != null) {
+                    com.distributedmq.common.model.PartitionMetadata partition = 
+                            com.distributedmq.common.model.PartitionMetadata.builder()
+                            .topicName(topicInfo.getTopicName())
+                            .partitionId(partInfo.getPartitionId())
+                            .leader(leader)
+                            .replicas(replicas)
+                            .isr(isr)
+                            .build();
+                    
+                    partitions.add(partition);
+                }
+            }
+            
+            metadata.setPartitions(partitions);
+        }
+        
+        return metadata;
     }
 
     /**

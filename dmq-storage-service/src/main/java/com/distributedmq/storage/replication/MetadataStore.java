@@ -121,8 +121,20 @@ public class MetadataStore {
             }
         }
 
-        // Update partition metadata
+        // Update partition metadata using FULL SNAPSHOT REPLACEMENT
+        // This ensures deleted topics/partitions are removed from storage service memory
         if (request.getPartitions() != null) {
+            // Clear all existing partition mappings
+            int oldPartitionCount = partitionLeaders.size();
+            log.info("Clearing {} existing partition mappings for full snapshot replacement", 
+                    oldPartitionCount);
+            
+            partitionLeaders.clear();
+            partitionFollowers.clear();
+            partitionISR.clear();
+            partitionLeaderEpochs.clear();
+            
+            // Rebuild partition mappings from the new snapshot
             for (MetadataUpdateRequest.PartitionMetadata partition : request.getPartitions()) {
                 updatePartitionLeadership(
                         partition.getTopic(),
@@ -133,6 +145,9 @@ public class MetadataStore {
                         partition.getLeaderEpoch()
                 );
             }
+            
+            log.info("Partition snapshot replacement completed: {} old partitions → {} new partitions",
+                    oldPartitionCount, partitionLeaders.size());
         }
 
         log.info("Metadata update completed at timestamp: {}", request.getTimestamp());
@@ -517,8 +532,19 @@ public class MetadataStore {
                         log.info("Processed {} brokers from initial metadata", brokersList.size());
                     }
 
-                    // Process topics and partitions
+                    // Process topics and partitions using FULL SNAPSHOT REPLACEMENT
                     if (response.get("topics") != null) {
+                        // Clear all existing partition mappings for full snapshot replacement
+                        int oldPartitionCount = partitionLeaders.size();
+                        log.info("Clearing {} existing partition mappings for full snapshot refresh", 
+                                oldPartitionCount);
+                        
+                        partitionLeaders.clear();
+                        partitionFollowers.clear();
+                        partitionISR.clear();
+                        partitionLeaderEpochs.clear();
+                        
+                        // Rebuild partition mappings from cluster metadata
                         List<Map<String, Object>> topicsList = 
                             (List<Map<String, Object>>) response.get("topics");
                         int totalPartitions = 0;
@@ -572,8 +598,8 @@ public class MetadataStore {
                             }
                         }
                         
-                        log.info("Processed {} topics with {} total partitions from initial metadata", 
-                            topicsList.size(), totalPartitions);
+                        log.info("Partition snapshot refresh completed: {} old partitions → {} new partitions from {} topics", 
+                            oldPartitionCount, totalPartitions, topicsList.size());
                     }
 
                     this.lastMetadataUpdateTimestamp = System.currentTimeMillis();
