@@ -41,6 +41,20 @@
         "port": 8083,
         "url": "http://localhost:8083",
         "pairedMetadataServiceId": 3
+      },
+      {
+        "id": 104,
+        "host": "localhost",
+        "port": 8084,
+        "url": "http://localhost:8084",
+        "pairedMetadataServiceId": 4
+      },
+      {
+        "id": 105,
+        "host": "localhost",
+        "port": 8085,
+        "url": "http://localhost:8085",
+        "pairedMetadataServiceId": 5
       }
     ]
   },
