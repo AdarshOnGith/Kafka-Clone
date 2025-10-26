@@ -1,5 +1,6 @@
 package com.distributedmq.metadata.config;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
@@ -23,7 +24,7 @@ public class ClusterTopologyConfig {
      * Path to centralized cluster configuration file
      * Change this constant if config file location changes
      */
-    private static final String CLUSTER_CONFIG_FILE_PATH = "config/services.json";
+    private static final String CLUSTER_CONFIG_FILE_PATH = "../config/services.json";
 
     private TopologyData topology;
 
@@ -114,7 +115,10 @@ public class ClusterTopologyConfig {
 
     @Data
     public static class TopologyData {
+        @JsonProperty("metadata-services")
         private List<MetadataServiceInfo> metadataServices;
+        
+        @JsonProperty("storage-services")
         private List<StorageServiceInfo> storageServices;
     }
 
