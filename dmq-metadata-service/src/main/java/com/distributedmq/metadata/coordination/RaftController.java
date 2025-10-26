@@ -3,6 +3,7 @@ package com.distributedmq.metadata.coordination;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.PostConstruct;
@@ -45,6 +46,10 @@ public class RaftController {
 
     @Autowired(required = false)
     private com.distributedmq.metadata.service.MetadataPushService metadataPushService;
+    
+    @Lazy
+    @Autowired(required = false)
+    private com.distributedmq.metadata.service.HeartbeatService heartbeatService;
 
     // Raft state
     private volatile RaftState state = RaftState.FOLLOWER;
@@ -299,6 +304,18 @@ public class RaftController {
             }
 
             log.info("🎖️ Node {} became leader for term {}", nodeId, currentTerm);
+
+            // Rebuild in-memory heartbeat state after controller failover
+            if (heartbeatService != null) {
+                try {
+                    heartbeatService.rebuildHeartbeatState();
+                    log.info("✅ Rebuilt in-memory heartbeat state for new controller");
+                } catch (Exception e) {
+                    log.error("❌ Failed to rebuild heartbeat state: {}", e.getMessage(), e);
+                }
+            } else {
+                log.warn("⚠️ HeartbeatService not available, heartbeat state not rebuilt");
+            }
 
             // Start sending heartbeats
             startHeartbeatTimer();
