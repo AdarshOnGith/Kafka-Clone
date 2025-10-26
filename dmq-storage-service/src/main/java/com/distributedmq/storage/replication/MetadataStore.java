@@ -93,7 +93,8 @@ public class MetadataStore {
      * This replaces the current metadata with the new snapshot
      */
     public void updateMetadata(MetadataUpdateRequest request) {
-        log.info("Updating metadata: version={}, {} brokers, {} partitions",
+        log.info("Updating metadata: type={}, version={}, {} brokers, {} partitions",
+                request.getUpdateType(),
                 request.getVersion(),
                 request.getBrokers() != null ? request.getBrokers().size() : 0,
                 request.getPartitions() != null ? request.getPartitions().size() : 0);
@@ -108,7 +109,7 @@ public class MetadataStore {
         // Reset refresh time when metadata is updated via push
         this.lastMetadataRefreshTime = System.currentTimeMillis();
 
-        // Update broker information
+        // Update broker information if present
         if (request.getBrokers() != null) {
             for (MetadataUpdateRequest.BrokerInfo brokerInfo : request.getBrokers()) {
                 BrokerInfo broker = BrokerInfo.builder()
@@ -121,21 +122,158 @@ public class MetadataStore {
             }
         }
 
-        // Update partition metadata using FULL SNAPSHOT REPLACEMENT
-        // This ensures deleted topics/partitions are removed from storage service memory
-        if (request.getPartitions() != null) {
-            // Clear all existing partition mappings
-            int oldPartitionCount = partitionLeaders.size();
-            log.info("Clearing {} existing partition mappings for full snapshot replacement", 
-                    oldPartitionCount);
+        // Handle different update types
+        MetadataUpdateRequest.UpdateType updateType = request.getUpdateType();
+        if (updateType == null) {
+            updateType = MetadataUpdateRequest.UpdateType.FULL_SNAPSHOT;  // Default for backward compatibility
+        }
+
+        switch (updateType) {
+            case FULL_SNAPSHOT:
+                handleFullSnapshotUpdate(request);
+                break;
             
-            partitionLeaders.clear();
-            partitionFollowers.clear();
-            partitionISR.clear();
-            partitionLeaderEpochs.clear();
+            case ISR_UPDATE:
+                handleISRUpdate(request);
+                break;
             
-            // Rebuild partition mappings from the new snapshot
-            for (MetadataUpdateRequest.PartitionMetadata partition : request.getPartitions()) {
+            case LEADER_UPDATE:
+                handleLeaderUpdate(request);
+                break;
+            
+            case TOPIC_CREATED:
+                handleTopicCreatedUpdate(request);
+                break;
+            
+            case TOPIC_DELETED:
+                handleTopicDeletedUpdate(request);
+                break;
+            
+            case BROKER_UPDATE:
+                // Broker updates already handled above
+                log.info("Broker status update processed (no partition changes)");
+                break;
+            
+            default:
+                log.warn("Unknown update type: {}, treating as FULL_SNAPSHOT", updateType);
+                handleFullSnapshotUpdate(request);
+                break;
+        }
+
+        log.info("Metadata update completed: version={}, type={}", 
+                this.currentMetadataVersion, updateType);
+    }
+
+    /**
+     * Handle full snapshot replacement (clear all + rebuild)
+     * Used for: initial sync, topic deletion, major changes
+     */
+    private void handleFullSnapshotUpdate(MetadataUpdateRequest request) {
+        if (request.getPartitions() == null) {
+            log.warn("Full snapshot update with no partitions, skipping");
+            return;
+        }
+
+        // Clear all existing partition mappings
+        int oldPartitionCount = partitionLeaders.size();
+        log.info("🔄 Full snapshot: Clearing {} existing partition mappings", oldPartitionCount);
+        
+        partitionLeaders.clear();
+        partitionFollowers.clear();
+        partitionISR.clear();
+        partitionLeaderEpochs.clear();
+        
+        // Rebuild partition mappings from the new snapshot
+        for (MetadataUpdateRequest.PartitionMetadata partition : request.getPartitions()) {
+            updatePartitionLeadership(
+                    partition.getTopic(),
+                    partition.getPartition(),
+                    partition.getLeaderId(),
+                    partition.getFollowerIds(),
+                    partition.getIsrIds(),
+                    partition.getLeaderEpoch()
+            );
+        }
+        
+        int newPartitionCount = partitionLeaders.size();
+        log.info("✅ Full snapshot completed: {} old partitions → {} new partitions", 
+                oldPartitionCount, newPartitionCount);
+    }
+
+    /**
+     * Handle incremental ISR update (only update ISR for specified partitions)
+     * Used for: ISR membership changes
+     */
+    private void handleISRUpdate(MetadataUpdateRequest request) {
+        if (request.getPartitions() == null || request.getPartitions().isEmpty()) {
+            log.warn("ISR update with no partitions, skipping");
+            return;
+        }
+
+        log.info("🔄 Incremental ISR update for {} partitions", request.getPartitions().size());
+        
+        for (MetadataUpdateRequest.PartitionMetadata partition : request.getPartitions()) {
+            String key = partition.getTopic() + "-" + partition.getPartition();
+            
+            List<Integer> oldISR = partitionISR.get(key);
+            partitionISR.put(key, partition.getIsrIds());
+            
+            log.info("✅ Updated ISR for {}: {} → {}", 
+                    key, oldISR, partition.getIsrIds());
+        }
+    }
+
+    /**
+     * Handle incremental leader update (only update leader for specified partitions)
+     * Used for: Leader elections
+     */
+    private void handleLeaderUpdate(MetadataUpdateRequest request) {
+        if (request.getPartitions() == null || request.getPartitions().isEmpty()) {
+            log.warn("Leader update with no partitions, skipping");
+            return;
+        }
+
+        log.info("🔄 Incremental leader update for {} partitions", request.getPartitions().size());
+        
+        for (MetadataUpdateRequest.PartitionMetadata partition : request.getPartitions()) {
+            String key = partition.getTopic() + "-" + partition.getPartition();
+            
+            Integer oldLeader = partitionLeaders.get(key);
+            partitionLeaders.put(key, partition.getLeaderId());
+            partitionLeaderEpochs.put(key, partition.getLeaderEpoch());
+            
+            // Update followers list if provided
+            if (partition.getFollowerIds() != null) {
+                partitionFollowers.put(key, partition.getFollowerIds());
+            }
+            
+            // Update ISR if provided
+            if (partition.getIsrIds() != null) {
+                partitionISR.put(key, partition.getIsrIds());
+            }
+            
+            log.info("✅ Updated leader for {}: {} → {}, epoch={}", 
+                    key, oldLeader, partition.getLeaderId(), partition.getLeaderEpoch());
+        }
+    }
+
+    /**
+     * Handle topic creation (add new partitions)
+     * Used for: Topic creation
+     */
+    private void handleTopicCreatedUpdate(MetadataUpdateRequest request) {
+        if (request.getPartitions() == null || request.getPartitions().isEmpty()) {
+            log.warn("Topic creation with no partitions, skipping");
+            return;
+        }
+
+        log.info("🔄 Topic created: adding {} partitions", request.getPartitions().size());
+        
+        for (MetadataUpdateRequest.PartitionMetadata partition : request.getPartitions()) {
+            String key = partition.getTopic() + "-" + partition.getPartition();
+            
+            // Only add if not already present (safety check)
+            if (!partitionLeaders.containsKey(key)) {
                 updatePartitionLeadership(
                         partition.getTopic(),
                         partition.getPartition(),
@@ -144,13 +282,43 @@ public class MetadataStore {
                         partition.getIsrIds(),
                         partition.getLeaderEpoch()
                 );
+                log.info("✅ Added new partition: {}", key);
+            } else {
+                log.debug("Partition {} already exists, skipping", key);
             }
-            
-            log.info("Partition snapshot replacement completed: {} old partitions → {} new partitions",
-                    oldPartitionCount, partitionLeaders.size());
+        }
+    }
+
+    /**
+     * Handle topic deletion (remove all partitions for deleted topics)
+     * Used for: Topic deletion
+     */
+    private void handleTopicDeletedUpdate(MetadataUpdateRequest request) {
+        if (request.getDeletedTopics() == null || request.getDeletedTopics().isEmpty()) {
+            log.warn("Topic deletion with no topics specified, skipping");
+            return;
         }
 
-        log.info("Metadata update completed at timestamp: {}", request.getTimestamp());
+        log.info("🔄 Topic deletion: removing partitions for {} topics", request.getDeletedTopics().size());
+        
+        for (String topicName : request.getDeletedTopics()) {
+            int removedCount = 0;
+            
+            // Remove all partitions matching the topic
+            List<String> keysToRemove = partitionLeaders.keySet().stream()
+                    .filter(key -> key.startsWith(topicName + "-"))
+                    .collect(Collectors.toList());
+            
+            for (String key : keysToRemove) {
+                partitionLeaders.remove(key);
+                partitionFollowers.remove(key);
+                partitionISR.remove(key);
+                partitionLeaderEpochs.remove(key);
+                removedCount++;
+            }
+            
+            log.info("✅ Removed {} partitions for deleted topic: {}", removedCount, topicName);
+        }
     }
 
     /**
@@ -166,7 +334,7 @@ public class MetadataStore {
         partitionISR.put(key, new ArrayList<>(isr));
         partitionLeaderEpochs.put(key, leaderEpoch);
 
-        log.info("Updated leadership for {}-{}: leader={}, followers={}, isr={}, epoch={}",
+        log.debug("Updated leadership for {}-{}: leader={}, followers={}, isr={}, epoch={}",
                 topic, partition, leaderId, followers, isr, leaderEpoch);
     }
 

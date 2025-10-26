@@ -42,6 +42,8 @@ public class MetadataStateMachine {
         
         log.info("Applying command: {} of type {}", command, command.getClass().getSimpleName());
         
+        boolean stateChanged = false;
+        
         // Handle RegisterBrokerCommand
         if (command instanceof RegisterBrokerCommand) {
             RegisterBrokerCommand cmd = (RegisterBrokerCommand) command;
@@ -49,10 +51,12 @@ public class MetadataStateMachine {
                     cmd.getBrokerId(), cmd.getHost(), cmd.getPort());
             applyRegisterBroker(cmd);
             log.info("Successfully applied RegisterBrokerCommand for broker {}", cmd.getBrokerId());
+            stateChanged = true;  // New broker always represents a change
         } 
         // Handle UnregisterBrokerCommand
         else if (command instanceof UnregisterBrokerCommand) {
             applyUnregisterBroker((UnregisterBrokerCommand) command);
+            stateChanged = true;  // Broker removal always represents a change
         }
         // Handle RegisterTopicCommand
         else if (command instanceof RegisterTopicCommand) {
@@ -61,6 +65,7 @@ public class MetadataStateMachine {
                     cmd.getTopicName(), cmd.getPartitionCount(), cmd.getReplicationFactor());
             applyRegisterTopic(cmd);
             log.info("Successfully applied RegisterTopicCommand for topic {}", cmd.getTopicName());
+            stateChanged = true;  // New topic always represents a change
         }
         // Handle AssignPartitionsCommand
         else if (command instanceof AssignPartitionsCommand) {
@@ -69,32 +74,39 @@ public class MetadataStateMachine {
                     cmd.getTopicName(), cmd.getAssignments().size());
             applyAssignPartitions(cmd);
             log.info("Successfully applied AssignPartitionsCommand for topic {}", cmd.getTopicName());
+            stateChanged = true;  // Partition assignments always represent a change
         }
         // Handle UpdatePartitionLeaderCommand
         else if (command instanceof UpdatePartitionLeaderCommand) {
             UpdatePartitionLeaderCommand cmd = (UpdatePartitionLeaderCommand) command;
             log.info("Applying UpdatePartitionLeaderCommand: topic={}, partition={}, newLeader={}", 
                     cmd.getTopicName(), cmd.getPartitionId(), cmd.getNewLeaderId());
-            applyUpdatePartitionLeader(cmd);
-            log.info("Successfully applied UpdatePartitionLeaderCommand for {}-{}", 
-                    cmd.getTopicName(), cmd.getPartitionId());
+            stateChanged = applyUpdatePartitionLeader(cmd);
+            if (stateChanged) {
+                log.info("Successfully applied UpdatePartitionLeaderCommand for {}-{}", 
+                        cmd.getTopicName(), cmd.getPartitionId());
+            }
         }
         // Handle UpdateISRCommand
         else if (command instanceof UpdateISRCommand) {
             UpdateISRCommand cmd = (UpdateISRCommand) command;
             log.info("Applying UpdateISRCommand: topic={}, partitionId={}, newISR={}", 
                     cmd.getTopicName(), cmd.getPartitionId(), cmd.getNewISR());
-            applyUpdateISR(cmd);
-            log.info("Successfully applied UpdateISRCommand for partition {}-{}", 
-                    cmd.getTopicName(), cmd.getPartitionId());
+            stateChanged = applyUpdateISR(cmd);
+            if (stateChanged) {
+                log.info("Successfully applied UpdateISRCommand for partition {}-{}", 
+                        cmd.getTopicName(), cmd.getPartitionId());
+            }
         }
         // Handle UpdateBrokerStatusCommand (Phase 4)
         else if (command instanceof UpdateBrokerStatusCommand) {
             UpdateBrokerStatusCommand cmd = (UpdateBrokerStatusCommand) command;
             log.info("Applying UpdateBrokerStatusCommand: brokerId={}, status={}, heartbeatTime={}", 
                     cmd.getBrokerId(), cmd.getStatus(), cmd.getLastHeartbeatTime());
-            applyUpdateBrokerStatus(cmd);
-            log.info("Successfully applied UpdateBrokerStatusCommand for broker {}", cmd.getBrokerId());
+            stateChanged = applyUpdateBrokerStatus(cmd);
+            if (stateChanged) {
+                log.info("Successfully applied UpdateBrokerStatusCommand for broker {}", cmd.getBrokerId());
+            }
         }
         // Handle DeleteTopicCommand
         else if (command instanceof DeleteTopicCommand) {
@@ -102,6 +114,7 @@ public class MetadataStateMachine {
             log.info("Applying DeleteTopicCommand: topic={}", cmd.getTopicName());
             applyDeleteTopic(cmd);
             log.info("Successfully applied DeleteTopicCommand for topic {}", cmd.getTopicName());
+            stateChanged = true;  // Topic deletion always represents a change
         }
         // Handle Map-based commands (fallback for serialization issues)
         else if (command instanceof Map) {
@@ -119,6 +132,7 @@ public class MetadataStateMachine {
                         .build();
                 applyRegisterBroker(cmd);
                 log.info("Successfully applied Map-based RegisterBrokerCommand for broker {}", cmd.getBrokerId());
+                stateChanged = true;
             } 
             // Try RegisterTopicCommand (has topicName, partitionCount, replicationFactor - NOT assignments)
             else if (map.containsKey("topicName") && map.containsKey("partitionCount") && 
@@ -154,6 +168,7 @@ public class MetadataStateMachine {
                         .build();
                 applyRegisterTopic(cmd);
                 log.info("Successfully applied Map-based RegisterTopicCommand for topic {}", cmd.getTopicName());
+                stateChanged = true;
             }
             // Try AssignPartitionsCommand (has topicName, assignments - NOT partitionCount/replicationFactor)
             else if (map.containsKey("topicName") && map.containsKey("assignments") && 
@@ -190,6 +205,7 @@ public class MetadataStateMachine {
                         .build();
                 applyAssignPartitions(cmd);
                 log.info("Successfully applied Map-based AssignPartitionsCommand for topic {}", cmd.getTopicName());
+                stateChanged = true;
             }
             // Try DeleteTopicCommand (has ONLY topicName and timestamp, nothing else)
             else if (map.containsKey("topicName") && map.size() <= 2 && 
@@ -205,6 +221,7 @@ public class MetadataStateMachine {
                         .build();
                 applyDeleteTopic(cmd);
                 log.info("Successfully applied Map-based DeleteTopicCommand for topic {}", cmd.getTopicName());
+                stateChanged = true;
             }
             // Try UpdateBrokerStatusCommand (has brokerId, status, lastHeartbeatTime)
             else if (map.containsKey("brokerId") && map.containsKey("status") && map.containsKey("lastHeartbeatTime")) {
@@ -226,8 +243,10 @@ public class MetadataStateMachine {
                         .lastHeartbeatTime(((Number) map.get("lastHeartbeatTime")).longValue())
                         .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
                         .build();
-                applyUpdateBrokerStatus(cmd);
-                log.info("Successfully applied Map-based UpdateBrokerStatusCommand for broker {}", cmd.getBrokerId());
+                stateChanged = applyUpdateBrokerStatus(cmd);
+                if (stateChanged) {
+                    log.info("Successfully applied Map-based UpdateBrokerStatusCommand for broker {}", cmd.getBrokerId());
+                }
             }
             // Try UnregisterBrokerCommand (has brokerId but NOT host/port/status/lastHeartbeatTime)
             else if (map.containsKey("brokerId") && !map.containsKey("host") && !map.containsKey("port") && !map.containsKey("status")) {
@@ -239,6 +258,7 @@ public class MetadataStateMachine {
                         .build();
                 applyUnregisterBroker(cmd);
                 log.info("Successfully applied Map-based UnregisterBrokerCommand for broker {}", cmd.getBrokerId());
+                stateChanged = true;
             }
             // Try UpdatePartitionLeaderCommand (has topicName, partitionId, newLeaderId, leaderEpoch - NOT newISR)
             else if (map.containsKey("topicName") && map.containsKey("partitionId") && 
@@ -252,9 +272,11 @@ public class MetadataStateMachine {
                         .leaderEpoch(((Number) map.get("leaderEpoch")).longValue())
                         .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
                         .build();
-                applyUpdatePartitionLeader(cmd);
-                log.info("Successfully applied Map-based UpdatePartitionLeaderCommand for {}-{}", 
-                        cmd.getTopicName(), cmd.getPartitionId());
+                stateChanged = applyUpdatePartitionLeader(cmd);
+                if (stateChanged) {
+                    log.info("Successfully applied Map-based UpdatePartitionLeaderCommand for {}-{}", 
+                            cmd.getTopicName(), cmd.getPartitionId());
+                }
             }
             // Try UpdateISRCommand (has topicName, partitionId, newISR - NOT newLeaderId/leaderEpoch)
             else if (map.containsKey("topicName") && map.containsKey("partitionId") && 
@@ -272,9 +294,11 @@ public class MetadataStateMachine {
                         .newISR(newISR)
                         .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
                         .build();
-                applyUpdateISR(cmd);
-                log.info("Successfully applied Map-based UpdateISRCommand for {}-{}", 
-                        cmd.getTopicName(), cmd.getPartitionId());
+                stateChanged = applyUpdateISR(cmd);
+                if (stateChanged) {
+                    log.info("Successfully applied Map-based UpdateISRCommand for {}-{}", 
+                            cmd.getTopicName(), cmd.getPartitionId());
+                }
             }
             else {
                 log.error("Unknown Map command structure: {}", map);
@@ -285,9 +309,13 @@ public class MetadataStateMachine {
             log.error("Command toString: {}", command.toString());
         }
         
-        // Increment metadata version after successfully applying any command
-        long newVersion = metadataVersion.incrementAndGet();
-        log.debug("Metadata version incremented to: {}", newVersion);
+        // Only increment metadata version if state actually changed
+        if (stateChanged) {
+            long newVersion = metadataVersion.incrementAndGet();
+            log.info("✅ Metadata version incremented to {} (state changed)", newVersion);
+        } else {
+            log.debug("⏭️ No state change, metadata version remains at {}", metadataVersion.get());
+        }
     }
 
     /**
@@ -318,19 +346,30 @@ public class MetadataStateMachine {
     /**
      * Apply broker status update (Phase 4)
      * Updates broker status and heartbeat timestamp
+     * @return true if state changed, false if no change
      */
-    private void applyUpdateBrokerStatus(UpdateBrokerStatusCommand command) {
+    private boolean applyUpdateBrokerStatus(UpdateBrokerStatusCommand command) {
         BrokerInfo broker = brokers.get(command.getBrokerId());
         if (broker == null) {
             log.warn("Cannot update status for unknown broker: id={}", command.getBrokerId());
-            return;
+            return false;
         }
 
+        // Check if status is actually changing (idempotency)
+        if (broker.getStatus() == command.getStatus() && 
+            broker.getLastHeartbeatTime() == command.getLastHeartbeatTime()) {
+            log.debug("Broker {} status unchanged ({}) and heartbeat unchanged, skipping version increment",
+                    command.getBrokerId(), command.getStatus());
+            return false;
+        }
+
+        BrokerStatus oldStatus = broker.getStatus();
         broker.setStatus(command.getStatus());
         broker.setLastHeartbeatTime(command.getLastHeartbeatTime());
         
-        log.info("Updated broker status: id={}, status={}, lastHeartbeat={}",
-                command.getBrokerId(), command.getStatus(), command.getLastHeartbeatTime());
+        log.info("Updated broker status: id={}, status={} → {}, lastHeartbeat={}",
+                command.getBrokerId(), oldStatus, command.getStatus(), command.getLastHeartbeatTime());
+        return true;
     }
 
     /**
@@ -394,48 +433,71 @@ public class MetadataStateMachine {
 
     /**
      * Apply partition leader update
+     * @return true if state changed, false if no change
      */
-    private void applyUpdatePartitionLeader(UpdatePartitionLeaderCommand command) {
+    private boolean applyUpdatePartitionLeader(UpdatePartitionLeaderCommand command) {
         Map<Integer, PartitionInfo> topicPartitions = partitions.get(command.getTopicName());
         if (topicPartitions == null) {
             log.warn("Cannot update partition leader - topic not found: {}", command.getTopicName());
-            return;
+            return false;
         }
 
         PartitionInfo partition = topicPartitions.get(command.getPartitionId());
         if (partition == null) {
             log.warn("Cannot update partition leader - partition not found: {}-{}", 
                     command.getTopicName(), command.getPartitionId());
-            return;
+            return false;
         }
 
+        // Check if leader is actually changing (idempotency)
+        if (partition.getLeaderId() == command.getNewLeaderId() && 
+            partition.getLeaderEpoch() >= command.getLeaderEpoch()) {
+            log.debug("Partition leader unchanged for {}-{}: leader={}, epoch={}, skipping version increment",
+                    command.getTopicName(), command.getPartitionId(), 
+                    partition.getLeaderId(), partition.getLeaderEpoch());
+            return false;
+        }
+
+        int oldLeader = partition.getLeaderId();
+        long oldEpoch = partition.getLeaderEpoch();
         partition.setLeaderId(command.getNewLeaderId());
         partition.setLeaderEpoch(command.getLeaderEpoch());
-        log.info("Updated partition leader: topic={}, partition={}, newLeader={}, epoch={}",
+        log.info("Updated partition leader: topic={}, partition={}, leader={} → {}, epoch={} → {}",
                 command.getTopicName(), command.getPartitionId(), 
-                command.getNewLeaderId(), command.getLeaderEpoch());
+                oldLeader, command.getNewLeaderId(), oldEpoch, command.getLeaderEpoch());
+        return true;
     }
 
     /**
      * Apply ISR update
+     * @return true if state changed, false if no change
      */
-    private void applyUpdateISR(UpdateISRCommand command) {
+    private boolean applyUpdateISR(UpdateISRCommand command) {
         Map<Integer, PartitionInfo> topicPartitions = partitions.get(command.getTopicName());
         if (topicPartitions == null) {
             log.warn("Cannot update ISR - topic not found: {}", command.getTopicName());
-            return;
+            return false;
         }
 
         PartitionInfo partition = topicPartitions.get(command.getPartitionId());
         if (partition == null) {
             log.warn("Cannot update ISR - partition not found: {}-{}", 
                     command.getTopicName(), command.getPartitionId());
-            return;
+            return false;
+        }
+
+        // Check if ISR is actually changing (idempotency)
+        List<Integer> currentISR = partition.getIsrIds();
+        if (currentISR != null && currentISR.equals(command.getNewISR())) {
+            log.debug("ISR unchanged for {}-{}: {}, skipping version increment",
+                    command.getTopicName(), command.getPartitionId(), currentISR);
+            return false;
         }
 
         partition.setIsrIds(command.getNewISR());
-        log.info("Updated ISR: topic={}, partition={}, newISR={}",
-                command.getTopicName(), command.getPartitionId(), command.getNewISR());
+        log.info("Updated ISR: topic={}, partition={}, {} → {}",
+                command.getTopicName(), command.getPartitionId(), currentISR, command.getNewISR());
+        return true;
     }
 
     /**

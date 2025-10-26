@@ -88,6 +88,7 @@ public class MetadataPushService {
 
         // Create complete cluster snapshot with ALL brokers and ALL partitions
         MetadataUpdateRequest request = MetadataUpdateRequest.builder()
+                .updateType(MetadataUpdateRequest.UpdateType.FULL_SNAPSHOT)  // Explicit full snapshot type
                 .version(metadataStateMachine.getMetadataVersion())
                 .brokers(activeBrokers.stream()
                         .map(this::convertBrokerNodeToBrokerInfo)
@@ -115,6 +116,153 @@ public class MetadataPushService {
                 successCount, responses.size());
 
         return responses;
+    }
+
+    /**
+     * Push ISR update for specific partitions (incremental)
+     * Only sends changed ISR, not entire cluster state
+     * Only pushes to affected brokers (replicas of the partition)
+     */
+    public List<MetadataUpdateResponse> pushISRUpdate(String topic, int partition, List<Integer> newISR, 
+                                                     List<Integer> replicaIds) {
+        log.info("Pushing incremental ISR update for {}-{}: newISR={}", topic, partition, newISR);
+
+        // Create partition metadata with only ISR info
+        MetadataUpdateRequest.PartitionMetadata partitionMetadata =
+                MetadataUpdateRequest.PartitionMetadata.builder()
+                        .topic(topic)
+                        .partition(partition)
+                        .isrIds(newISR)
+                        .build();
+
+        MetadataUpdateRequest request = MetadataUpdateRequest.builder()
+                .updateType(MetadataUpdateRequest.UpdateType.ISR_UPDATE)  // Incremental ISR update
+                .version(metadataStateMachine.getMetadataVersion())
+                .partitions(List.of(partitionMetadata))
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        // Get affected storage nodes (only replicas need this update)
+        List<String> storageUrls = getStorageUrlsForBrokers(replicaIds);
+
+        log.info("Pushing ISR update to {} replica brokers: {}", storageUrls.size(), replicaIds);
+
+        // Push to affected storage nodes only
+        List<MetadataUpdateResponse> responses = storageUrls.stream()
+                .map(url -> pushToStorageNode(url, request))
+                .collect(Collectors.toList());
+
+        // Log results
+        long successCount = responses.stream().filter(MetadataUpdateResponse::isSuccess).count();
+        log.info("ISR update push completed: {}/{} replicas successful",
+                successCount, responses.size());
+
+        return responses;
+    }
+
+    /**
+     * Push leader update for specific partition (incremental)
+     * Only sends changed leader, not entire cluster state
+     */
+    public List<MetadataUpdateResponse> pushLeaderUpdate(String topic, int partition, int newLeader, 
+                                                         long leaderEpoch, List<Integer> followers, 
+                                                         List<Integer> isrIds, List<Integer> replicaIds) {
+        log.info("Pushing incremental leader update for {}-{}: newLeader={}, epoch={}", 
+                topic, partition, newLeader, leaderEpoch);
+
+        // Create partition metadata with leader info
+        MetadataUpdateRequest.PartitionMetadata partitionMetadata =
+                MetadataUpdateRequest.PartitionMetadata.builder()
+                        .topic(topic)
+                        .partition(partition)
+                        .leaderId(newLeader)
+                        .leaderEpoch(leaderEpoch)
+                        .followerIds(followers)
+                        .isrIds(isrIds)
+                        .build();
+
+        MetadataUpdateRequest request = MetadataUpdateRequest.builder()
+                .updateType(MetadataUpdateRequest.UpdateType.LEADER_UPDATE)  // Incremental leader update
+                .version(metadataStateMachine.getMetadataVersion())
+                .partitions(List.of(partitionMetadata))
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        // Get affected storage nodes (only replicas need this update)
+        List<String> storageUrls = getStorageUrlsForBrokers(replicaIds);
+
+        log.info("Pushing leader update to {} replica brokers: {}", storageUrls.size(), replicaIds);
+
+        // Push to affected storage nodes only
+        List<MetadataUpdateResponse> responses = storageUrls.stream()
+                .map(url -> pushToStorageNode(url, request))
+                .collect(Collectors.toList());
+
+        // Log results
+        long successCount = responses.stream().filter(MetadataUpdateResponse::isSuccess).count();
+        log.info("Leader update push completed: {}/{} replicas successful",
+                successCount, responses.size());
+
+        return responses;
+    }
+
+    /**
+     * Push topic deletion notification (incremental)
+     * Tells storage nodes to remove partitions for deleted topic
+     */
+    public List<MetadataUpdateResponse> pushTopicDeleted(String topicName) {
+        log.info("Pushing topic deletion notification for topic: {}", topicName);
+
+        MetadataUpdateRequest request = MetadataUpdateRequest.builder()
+                .updateType(MetadataUpdateRequest.UpdateType.TOPIC_DELETED)  // Topic deletion
+                .version(metadataStateMachine.getMetadataVersion())
+                .deletedTopics(List.of(topicName))
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        // Get all storage service URLs (all nodes need to know about topic deletion)
+        List<String> storageUrls = ServiceDiscovery.getAllStorageServices().stream()
+                .map(ServiceDiscovery.StorageServiceInfo::getUrl)
+                .collect(Collectors.toList());
+
+        log.info("Pushing topic deletion to {} storage nodes", storageUrls.size());
+
+        // Push to all storage nodes
+        List<MetadataUpdateResponse> responses = storageUrls.stream()
+                .map(url -> pushToStorageNode(url, request))
+                .collect(Collectors.toList());
+
+        // Log results
+        long successCount = responses.stream().filter(MetadataUpdateResponse::isSuccess).count();
+        log.info("Topic deletion push completed: {}/{} storage nodes successful",
+                successCount, responses.size());
+
+        return responses;
+    }
+
+    /**
+     * Get storage service URLs for specific broker IDs
+     */
+    private List<String> getStorageUrlsForBrokers(List<Integer> brokerIds) {
+        return ServiceDiscovery.getAllStorageServices().stream()
+                .filter(service -> brokerIds.contains(service.getId()))
+                .map(ServiceDiscovery.StorageServiceInfo::getUrl)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Extract broker ID from service ID (e.g., "storage-101" → 101)
+     * Note: ServiceDiscovery.StorageServiceInfo.getId() returns broker ID directly
+     */
+    private Integer extractBrokerIdFromServiceId(String serviceId) {
+        if (serviceId == null || !serviceId.startsWith("storage-")) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(serviceId.substring("storage-".length()));
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     /**
@@ -188,6 +336,7 @@ public class MetadataPushService {
                 .collect(Collectors.toList());
 
         return MetadataUpdateRequest.builder()
+                .updateType(MetadataUpdateRequest.UpdateType.TOPIC_CREATED)  // Topic creation
                 .version(metadataStateMachine.getMetadataVersion())
                 .brokers(brokerInfos)
                 .partitions(partitionMetadatas)

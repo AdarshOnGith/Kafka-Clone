@@ -18,6 +18,23 @@ import java.util.Map;
 @AllArgsConstructor
 public class MetadataUpdateRequest {
 
+    /**
+     * Type of metadata update
+     * Determines how storage nodes should apply the update
+     */
+    public enum UpdateType {
+        FULL_SNAPSHOT,        // Complete cluster state (clear all + rebuild)
+        ISR_UPDATE,           // Only ISR changed for specific partitions
+        LEADER_UPDATE,        // Only leader changed for specific partitions
+        TOPIC_CREATED,        // New topic added (add partitions)
+        TOPIC_DELETED,        // Topic removed (remove partitions)
+        BROKER_UPDATE         // Broker status changed
+    }
+
+    // Type of update (defaults to FULL_SNAPSHOT for backward compatibility)
+    @Builder.Default
+    private UpdateType updateType = UpdateType.FULL_SNAPSHOT;
+
     // Metadata version for ordering and conflict resolution
     private Long version;
 
@@ -26,6 +43,9 @@ public class MetadataUpdateRequest {
 
     // Partition leadership updates
     private List<PartitionMetadata> partitions;
+
+    // Topics deleted (for TOPIC_DELETED type)
+    private List<String> deletedTopics;
 
     // Timestamp of this metadata update
     private Long timestamp;
