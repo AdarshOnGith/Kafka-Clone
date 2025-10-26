@@ -1,0 +1,35 @@
+﻿{
+    "overallHealth":  "ALL_HEALTHY",
+    "healthyServices":  2,
+    "timestamp":  "2025-10-23 01:13:01",
+    "duration":  0.85,
+    "results":  [
+                    {
+                        "Service":  "Metadata Service",
+                        "Timestamp":  {
+                                          "value":  "\/Date(1761162182323)\/",
+                                          "DisplayHint":  2,
+                                          "DateTime":  "23 October 2025 01:13:02"
+                                      },
+                        "Error":  null,
+                        "ResponseTime":  null,
+                        "StatusCode":  200,
+                        "Url":  "http://localhost:9091/api/v1/metadata/controller",
+                        "Status":  "HEALTHY"
+                    },
+                    {
+                        "Service":  "Storage Service",
+                        "Timestamp":  {
+                                          "value":  "\/Date(1761162182431)\/",
+                                          "DisplayHint":  2,
+                                          "DateTime":  "23 October 2025 01:13:02"
+                                      },
+                        "Error":  null,
+                        "ResponseTime":  null,
+                        "StatusCode":  200,
+                        "Url":  "http://localhost:8081/api/v1/storage/health",
+                        "Status":  "HEALTHY"
+                    }
+                ],
+    "totalServices":  2
+}

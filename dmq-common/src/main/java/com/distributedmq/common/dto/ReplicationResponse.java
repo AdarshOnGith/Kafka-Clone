@@ -28,6 +28,13 @@ public class ReplicationResponse {
     // Replication timing
     private Long replicationTimeMs;
 
+    // Lag tracking (Phase 1: ISR Lag Monitoring)
+    private Long followerLogEndOffset;      // Follower's current LEO after replication
+    private Long leaderLogEndOffset;        // Leader's LEO (from request)
+    private Long offsetLag;                 // LEO difference (messages behind)
+    private Long lastCaughtUpTimestamp;     // Last time follower was at lag=0
+    private Long timeSinceLastFetch;        // Time since last replication (ms)
+
     public enum ErrorCode {
         NONE,
         @JsonEnumDefaultValue

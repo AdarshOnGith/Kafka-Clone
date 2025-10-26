@@ -2,8 +2,11 @@ package com.distributedmq.storage.service;
 
 import com.distributedmq.common.dto.ConsumeRequest;
 import com.distributedmq.common.dto.ConsumeResponse;
+import com.distributedmq.common.dto.PartitionStatus;
 import com.distributedmq.common.dto.ProduceRequest;
 import com.distributedmq.common.dto.ProduceResponse;
+
+import java.util.List;
 
 /**
  * Service interface for Storage operations
@@ -46,6 +49,12 @@ public interface StorageService {
      * Bypasses leadership check since messages come from leader
      */
     ProduceResponse replicateMessages(ProduceRequest request);
+
+    /**
+     * Collect partition status for all partitions this node manages
+     * Used for status reporting and monitoring
+     */
+    List<PartitionStatus> collectPartitionStatus();
 
     // TODO: Add partition creation/deletion methods
 }

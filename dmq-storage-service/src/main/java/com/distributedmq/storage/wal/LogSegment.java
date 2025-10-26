@@ -8,6 +8,9 @@ import java.io.*;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.zip.CRC32;
 
 /**
  * Represents a single log segment file
@@ -21,7 +24,13 @@ public class LogSegment implements AutoCloseable {
     private FileOutputStream fileOutputStream;
     private DataOutputStream dataOutputStream;
     private long currentSize;
+    private long lastOffset = -1; // Track last offset in memory
+    private LogIndex index; // Index for fast offset lookups
+
     private static final int INT_BYTES = Integer.BYTES; // always 4 bytes in java
+
+    // Read-write lock for concurrent access: multiple readers, single writer
+    private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
 
     public LogSegment(Path baseDir, long baseOffset) throws IOException {
         this.baseDir = baseDir;
@@ -36,6 +45,9 @@ public class LogSegment implements AutoCloseable {
         this.dataOutputStream = new DataOutputStream(fileOutputStream);
         this.currentSize = logFile.length();
 
+        // Initialize index
+        this.index = new LogIndex(baseDir, baseOffset);
+
         log.debug("Created log segment: {}", logFile.getPath());
     }
 
@@ -43,25 +55,46 @@ public class LogSegment implements AutoCloseable {
      * Append message to segment
      */
     public void append(Message message) throws IOException {
+        rwLock.writeLock().lock();
+        try {
+            // Get current position before writing
+            long position = currentSize;
 
-        // TODO: Implement proper serialization format
-        // Ideal Format: [size][crc][offset][timestamp][key_length][key][value_length][value]
-        // Currently implemented:   [offset][timestamp][key_length][key][value_length][value]
-        
-        byte[] serialized = serializeMessage(message);
-        
-        dataOutputStream.writeInt(serialized.length);
-        dataOutputStream.write(serialized);
-        
-        currentSize += INT_BYTES + serialized.length;
+            // Format: [size][crc][offset][timestamp][key_length][key][value_length][value]
+            
+            byte[] serialized = serializeMessage(message);
+            CRC32 crc = new CRC32();
+            crc.update(serialized);
+            int checksum = (int) crc.getValue();
+            
+            dataOutputStream.writeInt(serialized.length + 4); // size includes CRC
+            dataOutputStream.writeInt(checksum);
+            dataOutputStream.write(serialized);
+            
+            int totalEntrySize = Integer.BYTES + Integer.BYTES + serialized.length;
+            currentSize += totalEntrySize;
+            lastOffset = message.getOffset(); // Update last offset in memory
+
+            // Index the message for fast lookups
+            index.indexMessage(message.getOffset(), position, totalEntrySize);
+
+        } finally {
+            rwLock.writeLock().unlock();
+        }
     }
 
     /**
      * Flush to disk
      */
     public void flush() throws IOException {
-        dataOutputStream.flush();
-        fileOutputStream.getFD().sync();
+        rwLock.writeLock().lock();
+        try {
+            dataOutputStream.flush();
+            fileOutputStream.getFD().sync();
+            index.flush();
+        } finally {
+            rwLock.writeLock().unlock();
+        }
     }
 
     /**
@@ -69,7 +102,13 @@ public class LogSegment implements AutoCloseable {
      */
     @Override
     public void close() throws IOException {
-        closeOutputStreams();
+        rwLock.writeLock().lock();
+        try {
+            closeOutputStreams();
+            index.close();
+        } finally {
+            rwLock.writeLock().unlock();
+        }
     }
 
     public long size() {
@@ -143,24 +182,48 @@ public class LogSegment implements AutoCloseable {
      * Read the last message from the segment to get the last offset
      */
     public long getLastOffset() throws IOException {
-        if (currentSize == 0) {
-            return -1; // No messages
-        }
-        
-        try (FileInputStream fis = new FileInputStream(logFile);
-             DataInputStream dis = new DataInputStream(fis)) {
-            
-            long lastOffset = -1;
-            while (dis.available() > 0) {
-                int messageLength = dis.readInt();
-                long messageOffset = dis.readLong(); // offset is first field in message
-                lastOffset = messageOffset;
-                
-                // Skip the rest of the message
-                dis.skipBytes(messageLength - 8); // 8 bytes for offset
+        rwLock.readLock().lock();
+        try {
+            // If we have the last offset in memory, return it
+            if (lastOffset >= 0) {
+                return lastOffset;
             }
             
-            return lastOffset;
+            if (currentSize == 0) {
+                return -1; // No messages
+            }
+            
+            try (FileInputStream fis = new FileInputStream(logFile);
+                 DataInputStream dis = new DataInputStream(fis)) {
+                
+                long foundLastOffset = -1;
+                while (dis.available() > 0) {
+                    int totalLength = dis.readInt();
+                    int expectedChecksum = dis.readInt();
+                    
+                    byte[] messageData = new byte[totalLength - 4]; // exclude CRC
+                    dis.readFully(messageData);
+                    
+                    // Validate checksum
+                    CRC32 crc = new CRC32();
+                    crc.update(messageData);
+                    int actualChecksum = (int) crc.getValue();
+                    
+                    if (expectedChecksum != actualChecksum) {
+                        log.error("Checksum validation failed for message at position in segment {}", logFile.getName());
+                        throw new IOException("Corrupted message detected in segment " + logFile.getName());
+                    }
+                    
+                    Message message = deserializeMessage(messageData);
+                    foundLastOffset = message.getOffset();
+                }
+                
+                // Update in-memory cache
+                lastOffset = foundLastOffset;
+                return foundLastOffset;
+            }
+        } finally {
+            rwLock.readLock().unlock();
         }
     }
 
@@ -168,36 +231,60 @@ public class LogSegment implements AutoCloseable {
      * Read messages from this segment starting from the given offset
      */
     public List<Message> readFromOffset(long startOffset, int maxMessages) throws IOException {
-        List<Message> messages = new ArrayList<>();
-        
-        // Close output streams to allow reading
-        closeOutputStreams();
-        
-        if (currentSize == 0) {
-            return messages;
-        }
-        
-        try (FileInputStream fis = new FileInputStream(logFile);
-             DataInputStream dis = new DataInputStream(fis)) {
+        rwLock.readLock().lock();
+        try {
+            List<Message> messages = new ArrayList<>();
             
-            while (dis.available() > 0 && messages.size() < maxMessages) {
-                int messageLength = dis.readInt();
-                byte[] messageData = new byte[messageLength];
-                dis.readFully(messageData);
+            if (currentSize == 0) {
+                return messages;
+            }
+            
+            // Use index to find starting position
+            long startPosition = index.findPosition(startOffset);
+            if (startPosition == -1) {
+                // No index entry, start from beginning
+                startPosition = 0;
+            }
+            
+            try (FileInputStream fis = new FileInputStream(logFile);
+                 DataInputStream dis = new DataInputStream(fis)) {
                 
-                Message message = deserializeMessage(messageData);
+                // Seek to the approximate position
+                if (startPosition > 0) {
+                    fis.skip(startPosition);
+                }
                 
-                // Only include messages at or after the start offset
-                if (message.getOffset() >= startOffset) {
-                    messages.add(message);
+                while (dis.available() > 0 && messages.size() < maxMessages) {
+                    int totalLength = dis.readInt();
+                    int expectedChecksum = dis.readInt();
+                    
+                    byte[] messageData = new byte[totalLength - 4]; // exclude CRC
+                    dis.readFully(messageData);
+                    
+                    // Validate checksum
+                    CRC32 crc = new CRC32();
+                    crc.update(messageData);
+                    int actualChecksum = (int) crc.getValue();
+                    
+                    if (expectedChecksum != actualChecksum) {
+                        log.error("Checksum validation failed for message at offset {} in segment {}", 
+                                 startOffset, logFile.getName());
+                        throw new IOException("Corrupted message detected in segment " + logFile.getName());
+                    }
+                    
+                    Message message = deserializeMessage(messageData);
+                    
+                    // Only include messages at or after the start offset
+                    if (message.getOffset() >= startOffset) {
+                        messages.add(message);
+                    }
                 }
             }
+            
+            return messages;
+        } finally {
+            rwLock.readLock().unlock();
         }
-        
-        // Reopen output streams for future writes
-        reopenOutputStreams();
-        
-        return messages;
     }
 
     /**
@@ -228,16 +315,6 @@ public class LogSegment implements AutoCloseable {
             } finally {
                 fileOutputStream = null;
             }
-        }
-    }
-
-    /**
-     * Reopen output streams for writing
-     */
-    private void reopenOutputStreams() throws IOException {
-        if (fileOutputStream == null) {
-            this.fileOutputStream = new FileOutputStream(logFile, true);
-            this.dataOutputStream = new DataOutputStream(fileOutputStream);
         }
     }
 

@@ -12,7 +12,11 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Write-Ahead Log implementation
@@ -34,6 +38,11 @@ public class WriteAheadLog implements AutoCloseable {
 
     // LogSegment: a portion of the write-ahead log representing a contiguous range of messages stored on disk
     private LogSegment currentSegment;
+
+    // Multi-segment reading infrastructure
+    private final List<LogSegment> allSegments = new ArrayList<>();
+    private final Map<Long, LogSegment> offsetToSegmentMap = new ConcurrentHashMap<>();
+    private final ReadWriteLock segmentsLock = new ReentrantReadWriteLock();
 
     private final StorageConfig config;
 
@@ -57,6 +66,9 @@ public class WriteAheadLog implements AutoCloseable {
             // Recover from existing segments or create new one
             recoverFromExistingSegments();
             
+            // Discover all segments for multi-segment reading
+            discoverAndLoadAllSegments();
+            
             log.info("Initialized WAL for {}-{} at {} (nextOffset: {}, logEndOffset: {})", 
                     topic, partition, logDirectory, nextOffset.get(), logEndOffset.get());
             
@@ -77,41 +89,181 @@ public class WriteAheadLog implements AutoCloseable {
         if (segmentFiles == null || segmentFiles.length == 0) {
             // No existing segments, create new one
             currentSegment = new LogSegment(logDirectory, 0);
+            allSegments.add(currentSegment);
             return;
         }
         
-        // Find the segment with the highest base offset
-        LogSegment latestSegment = null;
-        long maxBaseOffset = -1;
-        
+        // Sort segments by base offset
+        List<LogSegment> segments = new ArrayList<>();
         for (File segmentFile : segmentFiles) {
             String fileName = segmentFile.getName();
             String baseOffsetStr = fileName.substring(0, fileName.length() - StorageConfig.LOG_FILE_EXTENSION.length());
-            long baseOffset = Long.parseLong(baseOffsetStr);
-            
-            if (baseOffset > maxBaseOffset) {
-                maxBaseOffset = baseOffset;
-                latestSegment = new LogSegment(logDirectory, baseOffset);
+            try {
+                long baseOffset = Long.parseLong(baseOffsetStr);
+                segments.add(new LogSegment(logDirectory, baseOffset));
+            } catch (NumberFormatException e) {
+                log.warn("Skipping invalid segment file: {}", fileName);
             }
         }
         
+        // Sort segments by base offset
+        segments.sort(Comparator.comparingLong(LogSegment::getBaseOffset));
+        
+        // Validate all segments for consistency
+        validateSegmentsConsistency(segments);
+        
+        // Add validated segments to allSegments
+        allSegments.addAll(segments);
+        
+        // Find the latest valid segment
+        LogSegment latestSegment = segments.get(segments.size() - 1);
         currentSegment = latestSegment;
         
-        // Recover offsets by reading the last message from the segment
-        long lastOffset = currentSegment.getLastOffset();
-        if (lastOffset >= 0) {
-            long recoveredOffset = lastOffset + 1;
-            nextOffset.set(recoveredOffset);
-            logEndOffset.set(recoveredOffset);
-            highWaterMark.set(Math.min(highWaterMark.get(), recoveredOffset));
-        } else {
-            // Empty segment, start from maxBaseOffset
-            nextOffset.set(maxBaseOffset);
-            logEndOffset.set(maxBaseOffset);
+        // Recover offsets by validating the entire log
+        long recoveredNextOffset = recoverOffsetsFromValidatedSegments(segments);
+        
+        nextOffset.set(recoveredNextOffset);
+        logEndOffset.set(recoveredNextOffset);
+        highWaterMark.set(Math.min(highWaterMark.get(), recoveredNextOffset));
+        
+        log.info("Recovered WAL state: nextOffset={}, logEndOffset={}, highWaterMark={}, segments={}", 
+                nextOffset.get(), logEndOffset.get(), highWaterMark.get(), segments.size());
+    }
+
+    /**
+     * Validate consistency of all log segments
+     */
+    private void validateSegmentsConsistency(List<LogSegment> segments) throws IOException {
+        if (segments.isEmpty()) {
+            return;
         }
         
-        log.info("Recovered WAL state: nextOffset={}, logEndOffset={}, highWaterMark={}", 
-                nextOffset.get(), logEndOffset.get(), highWaterMark.get());
+        long expectedBaseOffset = 0;
+        long previousLastOffset = -1;
+        
+        for (int i = 0; i < segments.size(); i++) {
+            LogSegment segment = segments.get(i);
+            long segmentBaseOffset = segment.getBaseOffset();
+            
+            // Validate base offset continuity
+            if (i == 0) {
+                if (segmentBaseOffset != 0) {
+                    log.warn("First segment base offset is not 0: {}", segmentBaseOffset);
+                }
+            } else {
+                if (segmentBaseOffset != expectedBaseOffset) {
+                    log.error("Segment base offset discontinuity: expected {}, found {}", 
+                             expectedBaseOffset, segmentBaseOffset);
+                    throw new IOException("Inconsistent segment base offsets in WAL recovery");
+                }
+            }
+            
+            // Validate segment content and get last offset
+            long lastOffset = segment.getLastOffset();
+            if (lastOffset >= 0) {
+                // Validate offset continuity within segment
+                if (lastOffset < segmentBaseOffset) {
+                    log.error("Segment last offset {} is less than base offset {}", 
+                             lastOffset, segmentBaseOffset);
+                    throw new IOException("Invalid offset range in segment");
+                }
+                
+                // Validate continuity between segments
+                if (previousLastOffset >= 0 && segmentBaseOffset != (previousLastOffset + 1)) {
+                    log.error("Segment continuity broken: previous last offset {}, current base offset {}", 
+                             previousLastOffset, segmentBaseOffset);
+                    throw new IOException("Broken continuity between segments");
+                }
+                
+                previousLastOffset = lastOffset;
+                expectedBaseOffset = lastOffset + 1;
+            } else {
+                // Empty segment
+                expectedBaseOffset = segmentBaseOffset;
+            }
+            
+            log.debug("Validated segment {}: baseOffset={}, lastOffset={}", 
+                     segmentBaseOffset, segmentBaseOffset, lastOffset);
+        }
+        
+        log.info("Successfully validated {} segments for consistency", segments.size());
+    }
+
+    /**
+     * Recover next offset from validated segments
+     */
+    private long recoverOffsetsFromValidatedSegments(List<LogSegment> segments) throws IOException {
+        if (segments.isEmpty()) {
+            return 0;
+        }
+        
+        // Start from the last segment
+        LogSegment lastSegment = segments.get(segments.size() - 1);
+        long lastOffset = lastSegment.getLastOffset();
+        
+        if (lastOffset >= 0) {
+            return lastOffset + 1;
+        } else {
+            // Empty last segment, use its base offset
+            return lastSegment.getBaseOffset();
+        }
+    }
+
+    /**
+     * Discover and load all segments for multi-segment reading
+     */
+    private void discoverAndLoadAllSegments() throws IOException {
+        segmentsLock.writeLock().lock();
+        try {
+            // Don't clear allSegments, as it may contain segments from recovery
+            offsetToSegmentMap.clear();
+            
+            // Find all .log files
+            File[] segmentFiles = logDirectory.toFile().listFiles((dir, name) -> 
+                name.endsWith(StorageConfig.LOG_FILE_EXTENSION));
+            
+            if (segmentFiles != null) {
+                // Sort by base offset (filename)
+                java.util.Arrays.sort(segmentFiles, Comparator.comparing(File::getName));
+                
+                for (File file : segmentFiles) {
+                    String baseOffsetStr = file.getName().substring(0, 
+                        file.getName().length() - StorageConfig.LOG_FILE_EXTENSION.length());
+                    try {
+                        long baseOffset = Long.parseLong(baseOffsetStr);
+                        
+                        // Check if segment already exists (from recovery)
+                        LogSegment segment = allSegments.stream()
+                            .filter(s -> s.getBaseOffset() == baseOffset)
+                            .findFirst()
+                            .orElse(null);
+                        
+                        if (segment == null) {
+                            // Create new segment
+                            segment = new LogSegment(logDirectory, baseOffset);
+                            allSegments.add(segment);
+                        }
+                        
+                        // Build offset-to-segment mapping using current lastOffset
+                        long lastOffset = segment.getLastOffset();
+                        if (lastOffset >= 0) {
+                            // Map all offsets from base to last
+                            for (long offset = baseOffset; offset <= lastOffset; offset++) {
+                                offsetToSegmentMap.put(offset, segment);
+                            }
+                        }
+                    } catch (NumberFormatException e) {
+                        log.warn("Skipping invalid segment file: {}", file.getName());
+                    } catch (IOException e) {
+                        log.warn("Error loading segment {}, skipping", file.getName(), e);
+                    }
+                }
+            }
+            
+            log.info("Discovered {} segments for {}-{}", allSegments.size(), topic, partition);
+        } finally {
+            segmentsLock.writeLock().unlock();
+        }
     }
 
     /**
@@ -124,9 +276,21 @@ public class WriteAheadLog implements AutoCloseable {
             message.setOffset(offset);
             
             try {
-                // if max segment size is exceeded; roll to a new segment to keep the log manageable
-                if (currentSegment.size() >= config.getWal().getSegmentSizeBytes()) {
-                    rollSegment();
+                // Check if we need to roll to new segment
+                if (currentSegment != null && currentSegment.size() >= config.getWal().getSegmentSizeBytes()) {
+                    rollToNewSegment();
+                }
+                
+                // Create new segment if this is the first message
+                if (currentSegment == null) {
+                    currentSegment = new LogSegment(logDirectory, offset);
+                    segmentsLock.writeLock().lock();
+                    try {
+                        allSegments.add(currentSegment);
+                        offsetToSegmentMap.put(offset, currentSegment);
+                    } finally {
+                        segmentsLock.writeLock().unlock();
+                    }
                 }
                 
                 currentSegment.append(message);
@@ -146,32 +310,79 @@ public class WriteAheadLog implements AutoCloseable {
     }
 
     /**
-     * Read messages starting from offset
+     * Read messages starting from offset with multi-segment support
+     * TODO: Add isolation level support (read_committed vs read_uncommitted)
+     * Currently only supports read_committed (filters by HWM)
      */
     public List<Message> read(long startOffset, int maxMessages) {
         List<Message> messages = new ArrayList<>();
         
+        segmentsLock.readLock().lock();
         try {
-            // For now, read from the current segment only
-            // TODO: Implement multi-segment reading
-            if (currentSegment != null) {
-                List<Message> segmentMessages = currentSegment.readFromOffset(startOffset, maxMessages);
-                
-                // Filter messages that are within bounds (after startOffset and before highWaterMark)
-                for (Message message : segmentMessages) {
-                    if (message.getOffset() >= startOffset && message.getOffset() < highWaterMark.get()) {
-                        messages.add(message);
-                        if (messages.size() >= maxMessages) {
-                            break;
+            // Ensure segments are loaded
+            if (allSegments.isEmpty()) {
+                discoverAndLoadAllSegments();
+            }
+            
+            // Find segment containing startOffset
+            LogSegment startSegment = offsetToSegmentMap.get(startOffset);
+            if (startSegment == null) {
+                // Offset might be in a segment not yet mapped, or offset too old
+                startSegment = findSegmentForOffset(startOffset);
+            }
+            
+            if (startSegment == null) {
+                log.debug("No segment found for offset {} in {}-{}", startOffset, topic, partition);
+                return messages;
+            }
+            
+            // Read across segments until we have enough messages or run out of segments
+            LogSegment currentSegment = startSegment;
+            long currentOffset = startOffset;
+            int segmentsRead = 0;
+            int startSegmentIndex = allSegments.indexOf(startSegment);
+            
+            while (messages.size() < maxMessages && currentSegment != null) {
+                try {
+                    // Read from current segment
+                    List<Message> segmentMessages = currentSegment.readFromOffset(currentOffset, maxMessages - messages.size());
+                    
+                    // Filter messages that are committed (before HWM) and add to results
+                    for (Message message : segmentMessages) {
+                        if (message.getOffset() < highWaterMark.get()) {
+                            messages.add(message);
+                            if (messages.size() >= maxMessages) {
+                                break;
+                            }
                         }
+                    }
+                    
+                } catch (IOException e) {
+                    log.error("Error reading from segment {} in {}-{}, skipping segment", 
+                            currentSegment.getBaseOffset(), topic, partition);
+                    // Continue to next segment instead of failing completely
+                }
+                
+                // Move to next segment if we need more messages
+                if (messages.size() < maxMessages) {
+                    segmentsRead++;
+                    LogSegment nextSegment = getNextSegment(currentSegment);
+                    if (nextSegment != null) {
+                        currentSegment = nextSegment;
+                        currentOffset = currentSegment.getBaseOffset();
+                    } else {
+                        currentSegment = null; // No more segments
                     }
                 }
             }
             
-            log.debug("Read {} messages starting from offset {}", messages.size(), startOffset);
+            log.debug("Read {} messages starting from offset {} across {} segments in {}-{}", 
+                    messages.size(), startOffset, segmentsRead, topic, partition);
             
         } catch (Exception e) {
-            log.error("Failed to read messages from offset {}", startOffset, e);
+            log.error("Unexpected error during multi-segment read from offset {}: {}", startOffset, e.getMessage());
+        } finally {
+            segmentsLock.readLock().unlock();
         }
         
         return messages;
@@ -209,33 +420,54 @@ public class WriteAheadLog implements AutoCloseable {
     }
 
     /**
-     * Find the segment that contains the given offset
+     * Find the segment that contains the given offset using binary search
      */
-    private LogSegment findSegmentContainingOffset(List<LogSegment> segments, long offset) {
-        if (segments.isEmpty()) {
+    private LogSegment findSegmentForOffset(long offset) {
+        if (allSegments.isEmpty()) {
             return null;
         }
         
-        // Segments are sorted by base offset
-        for (int i = segments.size() - 1; i >= 0; i--) {
-            LogSegment segment = segments.get(i);
-            long baseOffset = segment.getBaseOffset();
+        // Binary search through segments
+        int low = 0;
+        int high = allSegments.size() - 1;
+        
+        while (low <= high) {
+            int mid = (low + high) / 2;
+            LogSegment segment = allSegments.get(mid);
             
-            // Check if this segment could contain the offset
-            if (baseOffset <= offset) {
-                // For the last segment, it can contain any offset >= baseOffset
-                if (i == segments.size() - 1) {
-                    return segment;
-                }
+            try {
+                long baseOffset = segment.getBaseOffset();
+                long lastOffset = segment.getLastOffset();
                 
-                // For other segments, check if offset is before next segment's base offset
-                long nextBaseOffset = segments.get(i + 1).getBaseOffset();
-                if (offset < nextBaseOffset) {
+                if (offset >= baseOffset && offset <= lastOffset) {
                     return segment;
+                } else if (offset < baseOffset) {
+                    high = mid - 1;
+                } else {
+                    low = mid + 1;
+                }
+            } catch (IOException e) {
+                log.warn("Error reading segment {} for offset lookup, skipping", segment.getBaseOffset());
+                // Continue search, this segment might be corrupted
+                if (offset < segment.getBaseOffset()) {
+                    high = mid - 1;
+                } else {
+                    low = mid + 1;
                 }
             }
         }
         
+        return null; // Offset not found in any segment
+    }
+
+    /**
+     * Get the next segment after the given segment
+     */
+    private LogSegment getNextSegment(LogSegment currentSegment) {
+        int currentIndex = allSegments.indexOf(currentSegment);
+        if (currentIndex >= 0 && currentIndex < allSegments.size() - 1) {
+            return allSegments.get(currentIndex + 1);
+        }
         return null;
     }
 
@@ -253,16 +485,26 @@ public class WriteAheadLog implements AutoCloseable {
     }
 
     /**
-     * Roll to new segment
+     * Roll to new segment with proper segment tracking
      */
-    private void rollSegment() throws IOException {
+    private void rollToNewSegment() throws IOException {
         if (currentSegment != null) {
             currentSegment.close();
         }
         
-        currentSegment = new LogSegment(logDirectory, nextOffset.get());
+        long newBaseOffset = nextOffset.get();
+        currentSegment = new LogSegment(logDirectory, newBaseOffset);
         
-        log.info("Rolled to new segment at offset {}", nextOffset.get());
+        // Update segment tracking
+        segmentsLock.writeLock().lock();
+        try {
+            allSegments.add(currentSegment);
+            offsetToSegmentMap.put(newBaseOffset, currentSegment);
+        } finally {
+            segmentsLock.writeLock().unlock();
+        }
+        
+        log.info("Rolled to new segment at offset {} for {}-{}", newBaseOffset, topic, partition);
     }
 
     public long getHighWaterMark() {
@@ -286,8 +528,23 @@ public class WriteAheadLog implements AutoCloseable {
      */
     @Override
     public void close() throws IOException {
+        // Close current segment
         if (currentSegment != null) {
             currentSegment.close();
+        }
+        
+        // Close all segments
+        segmentsLock.writeLock().lock();
+        try {
+            for (LogSegment segment : allSegments) {
+                if (segment != currentSegment) { // Already closed above
+                    segment.close();
+                }
+            }
+            allSegments.clear();
+            offsetToSegmentMap.clear();
+        } finally {
+            segmentsLock.writeLock().unlock();
         }
     }
 

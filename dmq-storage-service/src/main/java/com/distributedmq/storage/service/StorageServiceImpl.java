@@ -4,6 +4,7 @@ import com.distributedmq.common.dto.ConsumeRequest;
 import com.distributedmq.common.dto.ConsumeResponse;
 import com.distributedmq.common.dto.ProduceRequest;
 import com.distributedmq.common.dto.ProduceResponse;
+import com.distributedmq.common.dto.PartitionStatus;
 import com.distributedmq.common.model.Message;
 import com.distributedmq.storage.config.StorageConfig;
 import com.distributedmq.storage.replication.MetadataStore;
@@ -16,6 +17,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -32,10 +34,37 @@ public class StorageServiceImpl implements StorageService {
     // Map of topic-partition to WAL
     private final Map<String, WriteAheadLog> partitionLogs = new ConcurrentHashMap<>();
     
+    // Track pending replication for HWM advancement (for acks=0 and acks=1)
+    // topic-partition -> pending offset that needs ISR confirmation for HWM
+    private final Map<String, Long> pendingHWMUpdates = new ConcurrentHashMap<>();
+    
+    // Track leader HWM per partition (received from replication requests)
+    // topic-partition -> latest leader HWM
+    private final Map<String, Long> leaderHighWaterMarks = new ConcurrentHashMap<>();
+    
     private final ReplicationManager replicationManager;
     private final StorageConfig config;
     private final MetadataStore metadataStore;
 
+    /**
+     * Append messages to partition log with replication behavior based on acks:
+     * 
+     * REPLICATION BEHAVIOR (All ack types):
+     * - Leader ALWAYS sends replication requests to ALL ISR followers asynchronously
+     * - Only ISR (In-Sync Replicas) members receive replication requests
+     * - Followers NOT in ISR are excluded from replication
+     * 
+     * RESPONSE TIMING (Producer acknowledgment):
+     * - acks=0: Returns immediately after receiving request (before leader write)
+     * - acks=1: Returns after leader write completes (doesn't wait for followers)
+     * - acks=-1: Returns ONLY after min.insync.replicas acknowledge
+     * 
+     * HIGH WATERMARK UPDATES:
+     * - HWM is advanced ONLY when min.insync.replicas successfully replicate
+     * - For acks=0 and acks=1: HWM updated asynchronously after followers acknowledge
+     * - For acks=-1: HWM updated synchronously before responding to producer
+     * - Consumers can only read up to HWM (committed messages)
+     */
     @Override
     public ProduceResponse appendMessages(ProduceRequest request) {
         String topicPartition = getTopicPartitionKey(request.getTopic(), request.getPartition());
@@ -233,6 +262,12 @@ public class StorageServiceImpl implements StorageService {
         log.info("Replicating {} messages to {} (follower)", 
                 request.getMessages().size(), topicPartition);
         
+        // Store leader HWM for lag calculation
+        if (request.getLeaderHighWaterMark() != null) {
+            leaderHighWaterMarks.put(topicPartition, request.getLeaderHighWaterMark());
+            log.debug("Updated leader HWM for {}: {}", topicPartition, request.getLeaderHighWaterMark());
+        }
+        
         // Step 1: Validate request (skip leadership check for replication)
         ProduceResponse.ErrorCode validationError = validateProduceRequest(request);
         if (validationError != ProduceResponse.ErrorCode.NONE) {
@@ -313,6 +348,20 @@ public class StorageServiceImpl implements StorageService {
     }
     
     /**
+     * Update HWM asynchronously after successful replication to min.insync.replicas
+     * This is called from async replication tasks for acks=0 and acks=1
+     */
+    private void updateHighWaterMarkAsync(String topicPartition, WriteAheadLog wal) {
+        try {
+            long currentLeo = wal.getLogEndOffset();
+            wal.updateHighWaterMark(currentLeo);
+            log.debug("Async HWM update: {} advanced to {}", topicPartition, currentLeo);
+        } catch (Exception e) {
+            log.error("Failed to update HWM asynchronously for {}: {}", topicPartition, e.getMessage());
+        }
+    }
+    
+    /**
      * Validate produce request parameters
      */
     private ProduceResponse.ErrorCode validateProduceRequest(ProduceRequest request) {
@@ -351,13 +400,21 @@ public class StorageServiceImpl implements StorageService {
      * Replicate to ISR replicas and return detailed replication result
      */
     private ReplicationResult replicateToISR(ProduceRequest request, long baseOffset) {
+        // Get current high water mark for this partition
+        long currentHwm = getHighWaterMark(request.getTopic(), request.getPartition());
+        
+        // Phase 1: ISR Lag Monitoring - Get leader's LEO
+        long leaderLEO = getLogEndOffset(request.getTopic(), request.getPartition());
+        
         // For acks=-1, we need all ISR replicas to acknowledge
         boolean replicationSuccess = replicationManager.replicateBatch(
                 request.getTopic(),
                 request.getPartition(),
                 request.getMessages(),
                 baseOffset,
-                StorageConfig.ACKS_ALL
+                StorageConfig.ACKS_ALL,
+                currentHwm,
+                leaderLEO // Phase 1: Pass LEO to followers
         );
         
         // Get ISR information for detailed result
@@ -382,6 +439,7 @@ public class StorageServiceImpl implements StorageService {
     
     /**
      * Handle acks=0: No acknowledgment required, just append to leader
+     * But still replicate asynchronously to ISR followers (fire-and-forget)
      */
     private ProduceResponse handleAcksNone(ProduceRequest request, WriteAheadLog wal) {
         List<ProduceResponse.ProduceResult> results = new ArrayList<>();
@@ -415,6 +473,37 @@ public class StorageServiceImpl implements StorageService {
             }
         }
         
+        // Replicate asynchronously to ISR followers (fire-and-forget)
+        // Background task will update HWM when min.insync.replicas acknowledge
+        long finalBaseOffset = baseOffset;
+        String topicPartition = getTopicPartitionKey(request.getTopic(), request.getPartition());
+        CompletableFuture.runAsync(() -> {
+            try {
+                long currentHwm = getHighWaterMark(request.getTopic(), request.getPartition());
+                long leaderLEO = getLogEndOffset(request.getTopic(), request.getPartition()); // Phase 1: Get LEO
+                boolean replicationSuccess = replicationManager.replicateBatch(
+                    request.getTopic(),
+                    request.getPartition(),
+                    request.getMessages(),
+                    finalBaseOffset,
+                    StorageConfig.ACKS_NONE,
+                    currentHwm,
+                    leaderLEO // Phase 1: Pass LEO
+                );
+                log.debug("Async replication initiated for {}-{} at offset {} (acks=0), success: {}",
+                         request.getTopic(), request.getPartition(), finalBaseOffset, replicationSuccess);
+                
+                // Update HWM if min.insync.replicas acknowledged
+                if (replicationSuccess) {
+                    updateHighWaterMarkAsync(topicPartition, wal);
+                }
+            } catch (Exception e) {
+                log.warn("Async replication failed for {}-{}: {}",
+                        request.getTopic(), request.getPartition(), e.getMessage());
+            }
+        });
+        
+        // Return immediately without waiting for replication
         return ProduceResponse.builder()
                 .topic(request.getTopic())
                 .partition(request.getPartition())
@@ -426,6 +515,7 @@ public class StorageServiceImpl implements StorageService {
     
     /**
      * Handle acks=1: Wait for leader acknowledgment only
+     * But still replicate asynchronously to ISR followers (fire-and-forget)
      */
     private ProduceResponse handleAcksLeader(ProduceRequest request, WriteAheadLog wal) {
         List<ProduceResponse.ProduceResult> results = new ArrayList<>();
@@ -459,8 +549,42 @@ public class StorageServiceImpl implements StorageService {
             }
         }
         
-        // For acks=1, we acknowledge immediately after leader append
-        // No replication required
+        // For acks=1, update HWM immediately after leader acknowledgment
+        // HWM should advance to the end of the batch we just wrote
+        long newHwm = baseOffset + request.getMessages().size();
+        wal.updateHighWaterMark(newHwm);
+        log.debug("Updated High Watermark to {} for topic-partition: {} (acks=1)",
+                 newHwm, getTopicPartitionKey(request.getTopic(), request.getPartition()));
+        
+        // Replicate asynchronously to ISR followers (fire-and-forget)
+        // This doesn't affect the producer acknowledgment
+        long finalBaseOffset = baseOffset;
+        String topicPartition = getTopicPartitionKey(request.getTopic(), request.getPartition());
+        CompletableFuture.runAsync(() -> {
+            try {
+                long currentHwm = getHighWaterMark(request.getTopic(), request.getPartition());
+                long leaderLEO = getLogEndOffset(request.getTopic(), request.getPartition()); // Phase 1: Get LEO
+                boolean replicationSuccess = replicationManager.replicateBatch(
+                    request.getTopic(),
+                    request.getPartition(),
+                    request.getMessages(),
+                    finalBaseOffset,
+                    StorageConfig.ACKS_LEADER,
+                    currentHwm,
+                    leaderLEO // Phase 1: Pass LEO
+                );
+                log.debug("Async replication initiated for {}-{} at offset {} (acks=1), success: {}",
+                         request.getTopic(), request.getPartition(), finalBaseOffset, replicationSuccess);
+                
+                // For acks=1, replication success/failure doesn't affect the response
+                // The producer was already acknowledged when the leader wrote
+            } catch (Exception e) {
+                log.warn("Async replication failed for {}-{}: {}",
+                        request.getTopic(), request.getPartition(), e.getMessage());
+            }
+        });
+        
+        // Return immediately after leader write without waiting for replication
         return ProduceResponse.builder()
                 .topic(request.getTopic())
                 .partition(request.getPartition())
@@ -522,13 +646,16 @@ public class StorageServiceImpl implements StorageService {
         
         // Step 3: Update High Watermark only if we have enough ISR replicas
         if (replicationResult.getSuccessfulReplicas() >= config.getReplication().getMinInsyncReplicas()) {
-            long currentLeo = wal.getLogEndOffset();
-            wal.updateHighWaterMark(currentLeo);
-            log.debug("Updated High Watermark to {} for topic-partition: {} (ISR replicas: {}/{})", 
-                     currentLeo, getTopicPartitionKey(request.getTopic(), request.getPartition()),
+            // HWM should be the minimum LEO across all ISR replicas
+            // Since we just successfully replicated to all ISR followers, they have caught up
+            // to at least baseOffset + messageCount, so HWM can be set to that value
+            long newHwm = baseOffset + request.getMessages().size();
+            wal.updateHighWaterMark(newHwm);
+            log.debug("Updated High Watermark to {} for topic-partition: {} (ISR replicas: {}/{})",
+                     newHwm, getTopicPartitionKey(request.getTopic(), request.getPartition()),
                      replicationResult.getSuccessfulReplicas(), replicationResult.getTotalReplicas());
         } else {
-            log.warn("Not enough ISR replicas for HWM advancement: {}/{} < minISR={}", 
+            log.warn("Not enough ISR replicas for HWM advancement: {}/{} < minISR={}",
                     replicationResult.getSuccessfulReplicas(), replicationResult.getTotalReplicas(),
                     config.getReplication().getMinInsyncReplicas());
         }
@@ -540,5 +667,101 @@ public class StorageServiceImpl implements StorageService {
                 .success(true)
                 .errorCode(ProduceResponse.ErrorCode.NONE)
                 .build();
+    }
+
+    /**
+     * Collect partition status for all partitions this node manages
+     * Used for status reporting and monitoring
+     */
+    public List<PartitionStatus> collectPartitionStatus() {
+        List<PartitionStatus> partitionStatuses = new ArrayList<>();
+        long currentTime = System.currentTimeMillis();
+
+        for (Map.Entry<String, WriteAheadLog> entry : partitionLogs.entrySet()) {
+            String topicPartitionKey = entry.getKey();
+            WriteAheadLog wal = entry.getValue();
+
+            // Parse topic and partition from key (format: "topic-partition")
+            String[] parts = topicPartitionKey.split("-", 2);
+            if (parts.length != 2) {
+                log.warn("Invalid topic-partition key format: {}", topicPartitionKey);
+                continue;
+            }
+
+            String topic = parts[0];
+            Integer partition = Integer.parseInt(parts[1]);
+
+            // Determine role
+            PartitionStatus.Role role = metadataStore.isLeaderForPartition(topic, partition) ?
+                    PartitionStatus.Role.LEADER : PartitionStatus.Role.FOLLOWER;
+
+            // Get LEO and HWM
+            Long leo = wal.getLogEndOffset();
+            Long hwm = wal.getHighWaterMark();
+
+            // Calculate lag (only for followers)
+            Long lag = null;
+            if (role == PartitionStatus.Role.FOLLOWER) {
+                lag = calculateLag(topic, partition, leo);
+            }
+
+            PartitionStatus status = PartitionStatus.builder()
+                    .topic(topic)
+                    .partition(partition)
+                    .role(role)
+                    .leo(leo)
+                    .lag(lag)
+                    .hwm(role == PartitionStatus.Role.LEADER ? hwm : null)
+                    .metadataVersion(metadataStore.getCurrentMetadataVersion())
+                    .timestamp(currentTime)
+                    .build();
+
+            partitionStatuses.add(status);
+
+            log.debug("Collected status for {}-{}: role={}, LEO={}, lag={}, HWM={}",
+                    topic, partition, role, leo, lag, hwm);
+        }
+
+        return partitionStatuses;
+    }
+
+    /**
+     * Calculate lag for a follower partition
+     * Lag = leader's HWM - follower's LEO
+     * Leader HWM is received from replication requests
+     */
+    private Long calculateLag(String topic, Integer partition, Long followerLeo) {
+        try {
+            String topicPartitionKey = getTopicPartitionKey(topic, partition);
+            Long leaderHwm = leaderHighWaterMarks.get(topicPartitionKey);
+            
+            if (leaderHwm == null) {
+                log.debug("No leader HWM available for {}-{}, cannot calculate lag", topic, partition);
+                return null; // Unknown lag
+            }
+            
+            if (followerLeo == null) {
+                log.warn("Follower LEO is null for {}-{}", topic, partition);
+                return null;
+            }
+            
+            long lag = leaderHwm - followerLeo;
+            
+            // Lag should not be negative (follower should not be ahead of leader)
+            if (lag < 0) {
+                log.warn("Negative lag detected for {}-{}: leaderHWM={}, followerLEO={}, lag={}",
+                        topic, partition, leaderHwm, followerLeo, lag);
+                lag = 0; // Clamp to 0
+            }
+            
+            log.debug("Calculated lag for {}-{}: leaderHWM={}, followerLEO={}, lag={}",
+                    topic, partition, leaderHwm, followerLeo, lag);
+            
+            return lag;
+            
+        } catch (Exception e) {
+            log.warn("Error calculating lag for {}-{}: {}", topic, partition, e.getMessage());
+            return null; // Unknown lag
+        }
     }
 }

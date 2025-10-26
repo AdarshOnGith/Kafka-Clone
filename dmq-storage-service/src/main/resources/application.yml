@@ -32,10 +32,28 @@ dmq:
       fetch-max-bytes: ${REPLICATION_FETCH_MAX_BYTES:}
       fetch-max-wait-ms: ${REPLICATION_FETCH_MAX_WAIT_MS:}
       replica-lag-time-max-ms: ${REPLICATION_REPLICA_LAG_TIME_MAX_MS:}
+      
+      # Catch-Up Replication Configuration
+      catchup:
+        enabled: true                # Enable catch-up replication
+        threshold: 50                # Trigger catch-up if follower is > 50 messages behind
+        batch-size: 250              # Send 250 messages per catch-up batch
+        # scan-interval is fixed at 10 seconds via @Scheduled(fixedDelay = 10000)
 
     # Consumer Configuration
     consumer:
       default-max-messages: ${CONSUMER_DEFAULT_MAX_MESSAGES:}
+
+# Storage Service Metadata Configuration
+storage:
+  metadata:
+    periodic-refresh-interval-ms: 120000  # Force refresh every 2 minutes
+  
+  heartbeat:
+    version-mismatch-threshold: 3         # 3 consecutive mismatches trigger refresh
+  
+  replication:
+    lag-report-interval-ms: 15000         # Report lag every 15 seconds
 
 logging:
   level:
