@@ -1,5 +1,6 @@
 package com.distributedmq.storage.config;
 
+import com.distributedmq.storage.heartbeat.HeartbeatSender;
 import com.distributedmq.storage.replication.MetadataStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -67,5 +68,31 @@ public class StorageServiceConfig {
         metadataStore.registerWithMetadataService();
 
         return metadataStore;
+    }
+
+    /**
+     * Heartbeat Sender Bean
+     * Automatically starts sending heartbeats to metadata service every 5 seconds
+     */
+    @Bean
+    public HeartbeatSender heartbeatSender(RestTemplate restTemplate) {
+        Integer brokerId = storageConfig.getBroker().getId();
+        
+        // Get metadata service URL from config/services.json
+        ClusterTopologyConfig.MetadataServiceInfo metadataService = 
+            clusterTopologyConfig.getPrimaryMetadataService();
+        
+        String metadataServiceUrl;
+        if (metadataService != null && metadataService.getUrl() != null) {
+            metadataServiceUrl = metadataService.getUrl();
+        } else {
+            metadataServiceUrl = "http://localhost:9091";
+            log.warn("Using fallback metadata service URL for heartbeat: {}", metadataServiceUrl);
+        }
+        
+        HeartbeatSender sender = new HeartbeatSender(brokerId, metadataServiceUrl, restTemplate);
+        log.info("Heartbeat sender configured for broker {} → {}", brokerId, metadataServiceUrl);
+        
+        return sender;
     }
 }

@@ -74,45 +74,19 @@ public class ControllerServiceImpl implements ControllerService {
     /**
      * Initialize brokers from centralized config file - only called after becoming Raft leader
      * Loads storage services from config/services.json
+     * 
+     * NOTE: Brokers are registered but marked OFFLINE. They become ONLINE when they send first heartbeat.
      */
     private void initializeBrokersFromConfig() {
-        log.info("Initializing storage service brokers from config/services.json through Raft consensus");
-
-        // Load brokers from centralized config
-        List<ClusterTopologyConfig.StorageServiceInfo> configBrokers = clusterTopologyConfig.getBrokers();
+        log.info("========================================");
+        log.info("SKIPPING auto-registration of brokers from config/services.json");
+        log.info("Brokers will register themselves when they start up");
+        log.info("========================================");
         
-        if (configBrokers == null || configBrokers.isEmpty()) {
-            log.warn("No storage services found in config/services.json - cluster will have no brokers!");
-            log.warn("Please add storage services to config/services.json if you want brokers in the cluster");
-            return;
-        }
-        
-        log.info("Found {} storage service(s) in configuration", configBrokers.size());
-        
-        int successCount = 0;
-        int failCount = 0;
-        
-        for (ClusterTopologyConfig.StorageServiceInfo brokerInfo : configBrokers) {
-            try {
-                BrokerNode broker = BrokerNode.builder()
-                    .brokerId(brokerInfo.getId())
-                    .host(brokerInfo.getHost())
-                    .port(brokerInfo.getPort())
-                    .status(BrokerStatus.ONLINE)
-                    .build();
-                    
-                registerBroker(broker);
-                successCount++;
-                log.info("Successfully registered storage service broker from config: id={}, address={}:{}", 
-                    broker.getBrokerId(), broker.getHost(), broker.getPort());
-            } catch (Exception e) {
-                failCount++;
-                log.error("Failed to register storage service broker {}: {}", brokerInfo.getId(), e.getMessage());
-                // Continue with other brokers even if one fails
-            }
-        }
-
-        log.info("Broker initialization from config completed: {} succeeded, {} failed", successCount, failCount);
+        // REMOVED: Auto-registration of brokers from config
+        // Reason: Brokers should only be registered when they actually start up and send heartbeat
+        // The old approach registered all brokers as ONLINE immediately, which was incorrect
+        // Now: Storage services register themselves via /api/v1/metadata/brokers POST endpoint
     }
 
     @Override

@@ -79,6 +79,16 @@ public class StorageConfig {
         private Integer minInsyncReplicas = 1; // Minimum ISR required for HW advancement
     }
 
+    // ========== HEARTBEAT CONFIGURATION ==========
+    private HeartbeatConfig heartbeat = new HeartbeatConfig();
+
+    @Data
+    public static class HeartbeatConfig {
+        private Long intervalMs = 5000L;        // Send heartbeat every 5 seconds
+        private Integer retryAttempts = 3;      // Retry 3 times on failure
+        private Long retryDelayMs = 1000L;      // Wait 1 second between retries
+    }
+
     // ========== CONSUMER CONFIGURATION ==========
     private ConsumerConfig consumer = new ConsumerConfig();
 

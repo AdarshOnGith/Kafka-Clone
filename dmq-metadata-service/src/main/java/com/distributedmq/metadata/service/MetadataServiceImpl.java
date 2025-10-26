@@ -492,7 +492,7 @@ public class MetadataServiceImpl implements MetadataService {
                         .id(existingBroker.getBrokerId())
                         .host(existingBroker.getHost())
                         .port(existingBroker.getPort())
-                        .status("ONLINE")
+                        .status(existingBroker.getStatus().name())
                         .address(existingBroker.getHost() + ":" + existingBroker.getPort())
                         .registeredAt(existingBroker.getRegistrationTime())
                         .build();
@@ -507,7 +507,6 @@ public class MetadataServiceImpl implements MetadataService {
                 .brokerId(request.getId())
                 .host(request.getHost())
                 .port(request.getPort())
-                .status(BrokerStatus.ONLINE)
                 .build());
 
         // Get the broker from state machine (should be there now after Raft consensus)
@@ -525,7 +524,7 @@ public class MetadataServiceImpl implements MetadataService {
                 .id(registeredBroker.getBrokerId())
                 .host(registeredBroker.getHost())
                 .port(registeredBroker.getPort())
-                .status("ONLINE")
+                .status(registeredBroker.getStatus().name())
                 .address(registeredBroker.getHost() + ":" + registeredBroker.getPort())
                 .registeredAt(registeredBroker.getRegistrationTime())
                 .build();
@@ -545,7 +544,7 @@ public class MetadataServiceImpl implements MetadataService {
                 .id(brokerInfo.getBrokerId())
                 .host(brokerInfo.getHost())
                 .port(brokerInfo.getPort())
-                .status("ONLINE") // All brokers in state machine are considered online
+                .status(brokerInfo.getStatus().name())
                 .address(brokerInfo.getHost() + ":" + brokerInfo.getPort())
                 .registeredAt(brokerInfo.getRegistrationTime())
                 .build();
@@ -562,7 +561,7 @@ public class MetadataServiceImpl implements MetadataService {
                         .id(brokerInfo.getBrokerId())
                         .host(brokerInfo.getHost())
                         .port(brokerInfo.getPort())
-                        .status("ONLINE") // All brokers in state machine are considered online
+                        .status(brokerInfo.getStatus().name())
                         .address(brokerInfo.getHost() + ":" + brokerInfo.getPort())
                         .registeredAt(brokerInfo.getRegistrationTime())
                         .build())

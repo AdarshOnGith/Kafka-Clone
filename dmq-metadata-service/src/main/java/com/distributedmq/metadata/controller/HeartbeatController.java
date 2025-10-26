@@ -12,7 +12,7 @@ import org.springframework.web.bind.annotation.*;
  */
 @Slf4j
 @RestController
-@RequestMapping("/api/metadata/heartbeat")
+@RequestMapping("/api/v1/metadata/heartbeat")
 @RequiredArgsConstructor
 public class HeartbeatController {
 

@@ -391,6 +391,7 @@ public class MetadataStore {
 
     /**
      * Register this broker with the metadata service
+     * Retries on failure with exponential backoff
      */
     public void registerWithMetadataService() {
         if (metadataServiceUrl == null) {
@@ -398,33 +399,60 @@ public class MetadataStore {
             return;
         }
 
-        try {
-            // Create registration request using actual broker configuration
-            Map<String, Object> registration = new HashMap<>();
-            registration.put("id", localBrokerId);
-            registration.put("host", localBrokerHost != null ? localBrokerHost : "localhost");
-            registration.put("port", localBrokerPort != null ? localBrokerPort : 8081);
-            registration.put("rack", "default");
+        int maxAttempts = 5;
+        int attempt = 0;
+        long retryDelay = 2000; // Start with 2 seconds
 
-            log.info("Registering broker {} at {}:{} with metadata service at {}",
-                    localBrokerId, 
-                    registration.get("host"), 
-                    registration.get("port"),
-                    metadataServiceUrl);
+        while (attempt < maxAttempts) {
+            attempt++;
+            
+            try {
+                // Create registration request using actual broker configuration
+                Map<String, Object> registration = new HashMap<>();
+                registration.put("id", localBrokerId);
+                registration.put("host", localBrokerHost != null ? localBrokerHost : "localhost");
+                registration.put("port", localBrokerPort != null ? localBrokerPort : 8081);
+                registration.put("rack", "default");
 
-            // Send registration request
-            String endpoint = metadataServiceUrl + "/api/v1/metadata/brokers";
-            Map<String, Object> response = restTemplate.postForObject(endpoint, registration, Map.class);
+                log.info("Registering broker {} at {}:{} with metadata service at {} (attempt {}/{})",
+                        localBrokerId, 
+                        registration.get("host"), 
+                        registration.get("port"),
+                        metadataServiceUrl,
+                        attempt,
+                        maxAttempts);
 
-            if (response != null) {
-                log.info("Successfully registered broker {} with metadata service: {}", localBrokerId, response);
-            } else {
-                log.warn("Broker registration returned null response");
+                // Send registration request
+                String endpoint = metadataServiceUrl + "/api/v1/metadata/brokers";
+                Map<String, Object> response = restTemplate.postForObject(endpoint, registration, Map.class);
+
+                if (response != null) {
+                    log.info("✅ Successfully registered broker {} with metadata service: {}", localBrokerId, response);
+                    return; // Success - exit
+                } else {
+                    log.warn("Broker registration returned null response (attempt {}/{})", attempt, maxAttempts);
+                }
+
+            } catch (Exception e) {
+                log.error("Failed to register broker (attempt {}/{}): {}", attempt, maxAttempts, e.getMessage());
+                
+                // If not the last attempt, wait before retrying
+                if (attempt < maxAttempts) {
+                    try {
+                        log.info("Retrying broker registration in {} ms...", retryDelay);
+                        Thread.sleep(retryDelay);
+                        retryDelay *= 2; // Exponential backoff: 2s, 4s, 8s, 16s
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        log.error("Broker registration retry interrupted");
+                        return;
+                    }
+                }
             }
-
-        } catch (Exception e) {
-            log.error("Failed to register broker with metadata service: {}", e.getMessage());
         }
+        
+        log.error("❌ Failed to register broker {} after {} attempts. Heartbeats will continue to fail until manual registration!", 
+            localBrokerId, maxAttempts);
     }
 
     /**

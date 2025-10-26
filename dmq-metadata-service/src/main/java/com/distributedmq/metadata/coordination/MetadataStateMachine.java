@@ -1,5 +1,6 @@
 package com.distributedmq.metadata.coordination;
 
+import com.distributedmq.common.model.BrokerStatus;
 import com.distributedmq.common.model.TopicConfig;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -199,8 +200,31 @@ public class MetadataStateMachine {
                 applyDeleteTopic(cmd);
                 log.info("Successfully applied Map-based DeleteTopicCommand for topic {}", cmd.getTopicName());
             }
-            // Try UnregisterBrokerCommand
-            else if (map.containsKey("brokerId") && !map.containsKey("host") && !map.containsKey("port")) {
+            // Try UpdateBrokerStatusCommand (has brokerId, status, lastHeartbeatTime)
+            else if (map.containsKey("brokerId") && map.containsKey("status") && map.containsKey("lastHeartbeatTime")) {
+                log.info("Applying Map-based UpdateBrokerStatusCommand: {}", map);
+                
+                // Parse BrokerStatus from string or enum
+                BrokerStatus status;
+                Object statusObj = map.get("status");
+                if (statusObj instanceof String) {
+                    status = BrokerStatus.valueOf((String) statusObj);
+                } else {
+                    // Assuming it's already a BrokerStatus enum
+                    status = (BrokerStatus) statusObj;
+                }
+                
+                UpdateBrokerStatusCommand cmd = UpdateBrokerStatusCommand.builder()
+                        .brokerId(((Number) map.get("brokerId")).intValue())
+                        .status(status)
+                        .lastHeartbeatTime(((Number) map.get("lastHeartbeatTime")).longValue())
+                        .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
+                        .build();
+                applyUpdateBrokerStatus(cmd);
+                log.info("Successfully applied Map-based UpdateBrokerStatusCommand for broker {}", cmd.getBrokerId());
+            }
+            // Try UnregisterBrokerCommand (has brokerId but NOT host/port/status/lastHeartbeatTime)
+            else if (map.containsKey("brokerId") && !map.containsKey("host") && !map.containsKey("port") && !map.containsKey("status")) {
                 log.info("Applying Map-based UnregisterBrokerCommand: {}", map);
                 
                 UnregisterBrokerCommand cmd = UnregisterBrokerCommand.builder()
@@ -264,12 +288,12 @@ public class MetadataStateMachine {
                 .host(command.getHost())
                 .port(command.getPort())
                 .registrationTime(command.getTimestamp())
-                .status(com.distributedmq.common.model.BrokerStatus.ONLINE)  // Initially ONLINE
-                .lastHeartbeatTime(command.getTimestamp())  // Registration time as first heartbeat
+                .status(com.distributedmq.common.model.BrokerStatus.OFFLINE)  // Start as OFFLINE - becomes ONLINE on first heartbeat
+                .lastHeartbeatTime(0L)  // No heartbeat yet - will be set when first heartbeat arrives
                 .build();
 
         brokers.put(command.getBrokerId(), brokerInfo);
-        log.info("Registered broker: id={}, address={}:{}, status=ONLINE, registeredAt={}",
+        log.info("Registered broker: id={}, address={}:{}, status=OFFLINE (awaiting first heartbeat), registeredAt={}",
                 command.getBrokerId(), command.getHost(), command.getPort(), command.getTimestamp());
     }
 
