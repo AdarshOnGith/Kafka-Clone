@@ -40,6 +40,10 @@ public class MetadataStore {
 
     // This broker's ID (injected from config)
     private Integer localBrokerId;
+    
+    // This broker's host and port (from config/services.json)
+    private String localBrokerHost;
+    private Integer localBrokerPort;
 
     // Metadata service URL for notifications
     private String metadataServiceUrl;
@@ -60,6 +64,16 @@ public class MetadataStore {
 
     public Integer getLocalBrokerId() {
         return localBrokerId;
+    }
+    
+    public void setLocalBrokerHost(String host) {
+        this.localBrokerHost = host;
+        log.info("Local broker host set to: {}", host);
+    }
+    
+    public void setLocalBrokerPort(Integer port) {
+        this.localBrokerPort = port;
+        log.info("Local broker port set to: {}", port);
     }
 
     public void setMetadataServiceUrl(String url) {
@@ -385,12 +399,18 @@ public class MetadataStore {
         }
 
         try {
-            // Create registration request
+            // Create registration request using actual broker configuration
             Map<String, Object> registration = new HashMap<>();
             registration.put("id", localBrokerId);
-            registration.put("host", "localhost");
-            registration.put("port", 8081); // This should come from config
+            registration.put("host", localBrokerHost != null ? localBrokerHost : "localhost");
+            registration.put("port", localBrokerPort != null ? localBrokerPort : 8081);
             registration.put("rack", "default");
+
+            log.info("Registering broker {} at {}:{} with metadata service at {}",
+                    localBrokerId, 
+                    registration.get("host"), 
+                    registration.get("port"),
+                    metadataServiceUrl);
 
             // Send registration request
             String endpoint = metadataServiceUrl + "/api/v1/metadata/brokers";

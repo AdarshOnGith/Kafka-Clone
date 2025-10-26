@@ -2,6 +2,7 @@ package com.distributedmq.storage.config;
 
 import com.distributedmq.storage.replication.MetadataStore;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.client.RestTemplate;
@@ -9,11 +10,13 @@ import org.springframework.web.client.RestTemplate;
 /**
  * Configuration for storage service components
  */
+@Slf4j
 @Configuration
 @RequiredArgsConstructor
 public class StorageServiceConfig {
 
     private final StorageConfig storageConfig;
+    private final ClusterTopologyConfig clusterTopologyConfig;
 
     @Bean
     public RestTemplate restTemplate() {
@@ -23,11 +26,41 @@ public class StorageServiceConfig {
     @Bean
     public MetadataStore metadataStore() {
         MetadataStore metadataStore = new MetadataStore();
-        metadataStore.setLocalBrokerId(storageConfig.getBroker().getId());
+        
+        Integer brokerId = storageConfig.getBroker().getId();
+        metadataStore.setLocalBrokerId(brokerId);
+        
+        // Get broker configuration from config/services.json
+        ClusterTopologyConfig.StorageServiceInfo brokerInfo = 
+            clusterTopologyConfig.getBrokerById(brokerId);
+        
+        if (brokerInfo != null) {
+            // Use configuration from services.json
+            metadataStore.setLocalBrokerHost(brokerInfo.getHost());
+            metadataStore.setLocalBrokerPort(brokerInfo.getPort());
+            log.info("Loaded broker {} configuration from services.json: {}:{}", 
+                brokerId, brokerInfo.getHost(), brokerInfo.getPort());
+        } else {
+            // Fallback to StorageConfig values
+            log.warn("Broker {} not found in services.json, using fallback configuration", brokerId);
+            metadataStore.setLocalBrokerHost(storageConfig.getBroker().getHost());
+            metadataStore.setLocalBrokerPort(storageConfig.getBroker().getPort());
+        }
 
-        // Set the paired metadata service URL
-        // For now, hardcode to localhost:9091 since ServiceDiscovery has issues
-        String metadataServiceUrl = "http://localhost:9091";
+        // Get metadata service URL from config/services.json (use primary metadata service)
+        ClusterTopologyConfig.MetadataServiceInfo metadataService = 
+            clusterTopologyConfig.getPrimaryMetadataService();
+        
+        String metadataServiceUrl;
+        if (metadataService != null && metadataService.getUrl() != null) {
+            metadataServiceUrl = metadataService.getUrl();
+            log.info("Using metadata service from services.json: {}", metadataServiceUrl);
+        } else {
+            // Fallback to hardcoded URL
+            metadataServiceUrl = "http://localhost:9091";
+            log.warn("Metadata service not found in services.json, using fallback: {}", metadataServiceUrl);
+        }
+        
         metadataStore.setMetadataServiceUrl(metadataServiceUrl);
 
         // Register this broker with the metadata service
