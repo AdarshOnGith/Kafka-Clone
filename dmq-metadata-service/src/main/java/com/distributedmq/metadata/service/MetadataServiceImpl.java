@@ -489,7 +489,18 @@ public class MetadataServiceImpl implements MetadataService {
         // Step 4: Async delete from database (leader only, non-blocking)
         asyncDeleteTopic(topicName);
 
-        // Step 5: Push cluster metadata update (without the deleted topic) to storage nodes
+        // Step 5: Push topic deletion notification to all storage nodes
+        try {
+            log.info("Pushing topic deletion notification for {} to all storage nodes", topicName);
+            List<MetadataUpdateResponse> deletionResponses = metadataPushService.pushTopicDeletionUpdate(topicName);
+            long successCount = deletionResponses.stream().filter(MetadataUpdateResponse::isSuccess).count();
+            log.info("Topic deletion push completed: {}/{} storage nodes successful", successCount, deletionResponses.size());
+        } catch (Exception e) {
+            log.error("Failed to push topic deletion notification for {}: {}", topicName, e.getMessage());
+            // Don't fail the deletion if push fails
+        }
+
+        // Step 6: Push cluster metadata update (without the deleted topic) to storage nodes
         try {
             // Get all topics metadata from state machine
             List<TopicMetadata> remainingTopics = new ArrayList<>();

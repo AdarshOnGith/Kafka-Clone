@@ -27,6 +27,9 @@ public class MetadataUpdateRequest {
     // Partition leadership updates
     private List<PartitionMetadata> partitions;
 
+    // List of topic names that have been deleted
+    private List<String> deletedTopics;
+
     // Timestamp of this metadata update
     private Long timestamp;
 

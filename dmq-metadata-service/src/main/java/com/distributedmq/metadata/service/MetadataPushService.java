@@ -150,6 +150,41 @@ public class MetadataPushService {
     }
 
     /**
+     * Push topic deletion update to all storage nodes
+     * Called after topic deletion to notify brokers to remove partition metadata
+     */
+    public List<MetadataUpdateResponse> pushTopicDeletionUpdate(String topicName) {
+        log.info("Pushing topic deletion update for topic: {} to all storage nodes", topicName);
+
+        // Create metadata update request with deletion flag
+        // We send an update with the topic name but empty partitions to signal deletion
+        MetadataUpdateRequest request = MetadataUpdateRequest.builder()
+                .version(metadataStateMachine.getMetadataVersion())
+                .deletedTopics(List.of(topicName))  // Use deletedTopics field if available
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        // Get all storage service URLs
+        List<String> storageUrls = ServiceDiscovery.getAllStorageServices().stream()
+                .map(ServiceDiscovery.StorageServiceInfo::getUrl)
+                .collect(Collectors.toList());
+
+        log.info("Pushing topic deletion to {} storage nodes: {}", storageUrls.size(), storageUrls);
+
+        // Push to all storage nodes
+        List<MetadataUpdateResponse> responses = storageUrls.stream()
+                .map(url -> pushToStorageNode(url, request))
+                .collect(Collectors.toList());
+
+        // Log results
+        long successCount = responses.stream().filter(MetadataUpdateResponse::isSuccess).count();
+        log.info("Topic deletion push completed: {}/{} storage nodes successful",
+                successCount, responses.size());
+
+        return responses;
+    }
+
+    /**
      * Convert TopicMetadata to MetadataUpdateRequest
      */
     private MetadataUpdateRequest createMetadataUpdateRequest(TopicMetadata topicMetadata, List<BrokerNode> activeBrokers) {

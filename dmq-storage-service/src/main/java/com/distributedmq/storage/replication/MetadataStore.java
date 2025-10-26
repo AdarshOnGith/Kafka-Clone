@@ -90,10 +90,11 @@ public class MetadataStore {
      * This replaces the current metadata with the new snapshot
      */
     public void updateMetadata(MetadataUpdateRequest request) {
-        log.info("Updating metadata: version={}, {} brokers, {} partitions",
+        log.info("Updating metadata: version={}, {} brokers, {} partitions, {} deleted topics",
                 request.getVersion(),
                 request.getBrokers() != null ? request.getBrokers().size() : 0,
-                request.getPartitions() != null ? request.getPartitions().size() : 0);
+                request.getPartitions() != null ? request.getPartitions().size() : 0,
+                request.getDeletedTopics() != null ? request.getDeletedTopics().size() : 0);
 
         // Update metadata version and timestamp
         if (request.getVersion() != null) {
@@ -101,6 +102,13 @@ public class MetadataStore {
         }
         this.lastMetadataUpdateTimestamp = request.getTimestamp() != null ?
                 request.getTimestamp() : System.currentTimeMillis();
+
+        // Process deleted topics FIRST (before applying new updates)
+        if (request.getDeletedTopics() != null && !request.getDeletedTopics().isEmpty()) {
+            for (String deletedTopic : request.getDeletedTopics()) {
+                removeTopicMetadata(deletedTopic);
+            }
+        }
 
         // Update broker information
         if (request.getBrokers() != null) {
@@ -130,6 +138,39 @@ public class MetadataStore {
         }
 
         log.info("Metadata update completed at timestamp: {}", request.getTimestamp());
+    }
+
+    /**
+     * Remove all metadata for a deleted topic
+     * Called when a topic is deleted from the metadata service
+     */
+    private void removeTopicMetadata(String topicName) {
+        log.info("Removing all metadata for deleted topic: {}", topicName);
+
+        // Find and remove all partition keys for this topic
+        List<String> keysToRemove = new ArrayList<>();
+        for (String key : partitionLeaders.keySet()) {
+            // Check if this key belongs to the deleted topic
+            int lastDashIndex = key.lastIndexOf('-');
+            if (lastDashIndex > 0) {
+                String topic = key.substring(0, lastDashIndex);
+                if (topic.equals(topicName)) {
+                    keysToRemove.add(key);
+                }
+            }
+        }
+
+        // Remove all partition metadata for the deleted topic
+        int removedCount = 0;
+        for (String key : keysToRemove) {
+            partitionLeaders.remove(key);
+            partitionFollowers.remove(key);
+            partitionISR.remove(key);
+            partitionLeaderEpochs.remove(key);
+            removedCount++;
+        }
+
+        log.info("Removed metadata for {} partitions of deleted topic: {}", removedCount, topicName);
     }
 
     /**
@@ -228,11 +269,12 @@ public class MetadataStore {
             
             // Check if this broker is in the followers list
             if (followers != null && followers.contains(localBrokerId)) {
-                // Extract topic and partition from key
-                String[] parts = partitionKey.split("-");
-                if (parts.length >= 2) {
-                    String topic = parts[0];
-                    Integer partition = Integer.parseInt(parts[parts.length - 1]);
+                // Extract topic and partition from key (format: "topic-name-partition")
+                // Find the last dash to separate partition number from topic name
+                int lastDashIndex = partitionKey.lastIndexOf('-');
+                if (lastDashIndex > 0) {
+                    String topic = partitionKey.substring(0, lastDashIndex);
+                    Integer partition = Integer.parseInt(partitionKey.substring(lastDashIndex + 1));
                     
                     // Get additional metadata
                     Integer leaderId = partitionLeaders.get(partitionKey);
@@ -253,6 +295,54 @@ public class MetadataStore {
         log.debug("Found {} partitions where broker {} is a follower", 
                 followerPartitions.size(), localBrokerId);
         return followerPartitions;
+    }
+
+    /**
+     * Get all partitions where this broker is the leader
+     * Used for debugging and testing purposes
+     */
+    public List<PartitionInfo> getPartitionsWhereLeader() {
+        List<PartitionInfo> leaderPartitions = new ArrayList<>();
+        
+        // Iterate through all partition leaders
+        for (Map.Entry<String, Integer> entry : partitionLeaders.entrySet()) {
+            String partitionKey = entry.getKey();
+            Integer leaderId = entry.getValue();
+            
+            // Check if this broker is the leader
+            if (leaderId != null && leaderId.equals(localBrokerId)) {
+                // Extract topic and partition from key (format: "topic-name-partition")
+                // Find the last dash to separate partition number from topic name
+                int lastDashIndex = partitionKey.lastIndexOf('-');
+                if (lastDashIndex > 0) {
+                    String topic = partitionKey.substring(0, lastDashIndex);
+                    Integer partition = Integer.parseInt(partitionKey.substring(lastDashIndex + 1));
+                    
+                    // Get additional metadata
+                    List<Integer> isrIds = partitionISR.get(partitionKey);
+                    Long leaderEpoch = partitionLeaderEpochs.getOrDefault(partitionKey, 0L);
+                    
+                    leaderPartitions.add(new PartitionInfo(
+                        topic, 
+                        partition, 
+                        leaderId,
+                        isrIds != null ? isrIds : Collections.emptyList(),
+                        leaderEpoch
+                    ));
+                }
+            }
+        }
+        
+        log.debug("Found {} partitions where broker {} is the leader", 
+                leaderPartitions.size(), localBrokerId);
+        return leaderPartitions;
+    }
+
+    /**
+     * Get all partition leadership information (for debugging)
+     */
+    public Map<String, Integer> getAllPartitionLeaders() {
+        return new HashMap<>(partitionLeaders);
     }
 
     /**

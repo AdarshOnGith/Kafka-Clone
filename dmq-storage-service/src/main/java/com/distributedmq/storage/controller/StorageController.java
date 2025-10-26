@@ -19,6 +19,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
 /**
  * REST Controller for Storage operations
  * Entry point with request validation
@@ -40,6 +45,46 @@ public class StorageController {
     @GetMapping("/health")
     public ResponseEntity<String> healthCheck() {
         return ResponseEntity.ok("Storage Service is up and running");
+    }
+
+    /**
+     * Get broker metadata - shows which partitions this broker leads
+     * Endpoint: GET /api/v1/storage/broker/metadata
+     */
+    @GetMapping("/broker/metadata")
+    public ResponseEntity<Map<String, Object>> getBrokerMetadata() {
+        Map<String, Object> metadata = new HashMap<>();
+        
+        metadata.put("brokerId", config.getBroker().getId());
+        metadata.put("host", config.getBroker().getHost());
+        metadata.put("port", config.getBroker().getPort());
+        
+        // Get partitions where this broker is the leader
+        List<MetadataStore.PartitionInfo> leaderPartitions = metadataStore.getPartitionsWhereLeader();
+        metadata.put("leaderPartitions", leaderPartitions.stream()
+                .map(p -> Map.of(
+                        "topic", p.getTopic(),
+                        "partition", p.getPartition(),
+                        "leaderEpoch", p.getLeaderEpoch(),
+                        "isrCount", p.getIsrIds().size()
+                ))
+                .collect(java.util.stream.Collectors.toList()));
+        
+        // Get partitions where this broker is a follower
+        List<MetadataStore.PartitionInfo> followerPartitions = metadataStore.getPartitionsWhereFollower();
+        metadata.put("followerPartitions", followerPartitions.stream()
+                .map(p -> Map.of(
+                        "topic", p.getTopic(),
+                        "partition", p.getPartition(),
+                        "leaderId", p.getLeaderId(),
+                        "leaderEpoch", p.getLeaderEpoch()
+                ))
+                .collect(java.util.stream.Collectors.toList()));
+        
+        metadata.put("metadataVersion", metadataStore.getCurrentMetadataVersion());
+        metadata.put("lastMetadataUpdate", metadataStore.getLastMetadataUpdateTimestamp());
+        
+        return ResponseEntity.ok(metadata);
     }
 
     /**
