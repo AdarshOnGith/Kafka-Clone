@@ -80,21 +80,18 @@ public class ServiceDiscovery {
         ss1.setHost("localhost");
         ss1.setPort(8081);
         ss1.setUrl("http://localhost:8081");
-        ss1.setPairedMetadataServiceId(1);
 
         StorageServiceInfo ss2 = new StorageServiceInfo();
         ss2.setId(102);
         ss2.setHost("localhost");
         ss2.setPort(8082);
         ss2.setUrl("http://localhost:8082");
-        ss2.setPairedMetadataServiceId(2);
 
         StorageServiceInfo ss3 = new StorageServiceInfo();
         ss3.setId(103);
         ss3.setHost("localhost");
         ss3.setPort(8083);
         ss3.setUrl("http://localhost:8083");
-        ss3.setPairedMetadataServiceId(3);
 
         defaultConfig.getServices().getStorageServices().add(ss1);
         defaultConfig.getServices().getStorageServices().add(ss2);
@@ -116,14 +113,6 @@ public class ServiceDiscovery {
                 .filter(s -> s.getId().equals(serviceId))
                 .findFirst()
                 .map(StorageServiceInfo::getUrl)
-                .orElse(null);
-    }
-
-    public static Integer getPairedMetadataServiceId(Integer storageServiceId) {
-        return config.getServices().getStorageServices().stream()
-                .filter(s -> s.getId().equals(storageServiceId))
-                .findFirst()
-                .map(StorageServiceInfo::getPairedMetadataServiceId)
                 .orElse(null);
     }
 
@@ -190,10 +179,7 @@ public class ServiceDiscovery {
     }
 
     public static class StorageServiceInfo extends ServiceInfo {
-        private Integer pairedMetadataServiceId;
-
-        public Integer getPairedMetadataServiceId() { return pairedMetadataServiceId; }
-        public void setPairedMetadataServiceId(Integer pairedMetadataServiceId) { this.pairedMetadataServiceId = pairedMetadataServiceId; }
+        // No additional fields - storage services discover controller dynamically
     }
 
     public static class ControllerConfig {

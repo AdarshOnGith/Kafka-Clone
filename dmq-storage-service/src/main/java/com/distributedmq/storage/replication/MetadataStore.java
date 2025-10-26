@@ -60,6 +60,11 @@ public class MetadataStore {
     // Last metadata refresh time (for periodic refresh tracking)
     private volatile Long lastMetadataRefreshTime = System.currentTimeMillis();
 
+    // Current controller info (updated by discovery or CONTROLLER_CHANGED push)
+    private volatile Integer currentControllerId;
+    private volatile String currentControllerUrl;
+    private volatile Long currentControllerTerm;
+
     public void setLocalBrokerId(Integer brokerId) {
         this.localBrokerId = brokerId;
         log.info("Local broker ID set to: {}", brokerId);
@@ -152,6 +157,10 @@ public class MetadataStore {
             case BROKER_UPDATE:
                 // Broker updates already handled above
                 log.info("Broker status update processed (no partition changes)");
+                break;
+            
+            case CONTROLLER_CHANGED:
+                handleControllerChangedUpdate(request);
                 break;
             
             default:
@@ -319,6 +328,52 @@ public class MetadataStore {
             
             log.info("✅ Removed {} partitions for deleted topic: {}", removedCount, topicName);
         }
+    }
+
+    /**
+     * Handle controller change notification from metadata service
+     * Applies random jitter (0-5s) to prevent thundering herd when all storage nodes update simultaneously
+     */
+    private void handleControllerChangedUpdate(MetadataUpdateRequest request) {
+        if (request.getControllerId() == null || request.getControllerUrl() == null) {
+            log.warn("Controller change notification missing controller info, skipping");
+            return;
+        }
+
+        Integer oldControllerId = this.currentControllerId;
+        String oldControllerUrl = this.currentControllerUrl;
+
+        log.info("🔄 Controller change notification received: controllerId={}, controllerUrl={}, term={} (old: controllerId={}, url={})",
+                request.getControllerId(), request.getControllerUrl(), request.getControllerTerm(),
+                oldControllerId, oldControllerUrl);
+
+        // Apply random jitter (0-5 seconds) to prevent thundering herd
+        try {
+            int jitterMs = new java.util.Random().nextInt(5000); // 0-5000ms
+            log.debug("Applying random jitter of {}ms before updating controller info", jitterMs);
+            Thread.sleep(jitterMs);
+        } catch (InterruptedException e) {
+            log.warn("Interrupted during controller change jitter, proceeding with update", e);
+            Thread.currentThread().interrupt();
+        }
+
+        // Update controller info
+        updateCurrentControllerInfo(request.getControllerId(), request.getControllerUrl(), request.getControllerTerm());
+
+        log.info("✅ Controller updated: {} → {} (term: {})",
+                oldControllerId, request.getControllerId(), request.getControllerTerm());
+    }
+
+    /**
+     * Update current controller information (called by HeartbeatSender on discovery/rediscovery)
+     * Thread-safe update of volatile fields
+     */
+    public void updateCurrentControllerInfo(Integer controllerId, String controllerUrl, Long controllerTerm) {
+        this.currentControllerId = controllerId;
+        this.currentControllerUrl = controllerUrl;
+        this.currentControllerTerm = controllerTerm;
+
+        log.info("📌 Updated controller cache: id={}, url={}, term={}", controllerId, controllerUrl, controllerTerm);
     }
 
     /**
@@ -582,6 +637,71 @@ public class MetadataStore {
      * Register this broker with the metadata service
      * Retries on failure with exponential backoff
      */
+    /**
+     * Register broker with metadata service using discovered controller URL
+     * Called by HeartbeatSender after controller discovery
+     */
+    public void registerWithController(String controllerUrl) {
+        int maxAttempts = 5;
+        int attempt = 0;
+        long retryDelay = 2000; // Start with 2 seconds
+
+        while (attempt < maxAttempts) {
+            attempt++;
+            
+            try {
+                // Create registration request using actual broker configuration
+                Map<String, Object> registration = new HashMap<>();
+                registration.put("id", localBrokerId);
+                registration.put("host", localBrokerHost != null ? localBrokerHost : "localhost");
+                registration.put("port", localBrokerPort != null ? localBrokerPort : 8081);
+                registration.put("rack", "default");
+
+                log.info("📝 Registering broker {} at {}:{} with controller at {} (attempt {}/{})",
+                        localBrokerId, 
+                        registration.get("host"), 
+                        registration.get("port"),
+                        controllerUrl,
+                        attempt,
+                        maxAttempts);
+
+                // Send registration request
+                String endpoint = controllerUrl + "/api/v1/metadata/brokers";
+                Map<String, Object> response = restTemplate.postForObject(endpoint, registration, Map.class);
+
+                if (response != null) {
+                    log.info("✅ Successfully registered broker {} with controller: {}", localBrokerId, response);
+                    return; // Success - exit
+                } else {
+                    log.warn("Broker registration returned null response (attempt {}/{})", attempt, maxAttempts);
+                }
+
+            } catch (Exception e) {
+                log.error("Failed to register broker (attempt {}/{}): {}", attempt, maxAttempts, e.getMessage());
+                
+                // If not the last attempt, wait before retrying
+                if (attempt < maxAttempts) {
+                    try {
+                        log.info("Retrying broker registration in {} ms...", retryDelay);
+                        Thread.sleep(retryDelay);
+                        retryDelay *= 2; // Exponential backoff: 2s, 4s, 8s, 16s
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        log.error("Broker registration retry interrupted");
+                        return;
+                    }
+                }
+            }
+        }
+        
+        log.error("❌ Failed to register broker {} after {} attempts!", 
+            localBrokerId, maxAttempts);
+    }
+
+    /**
+     * OLD METHOD - kept for backward compatibility but should not be used
+     * Use registerWithController() instead
+     */
     public void registerWithMetadataService() {
         if (metadataServiceUrl == null) {
             log.warn("Metadata service URL not configured, cannot register broker");
@@ -645,9 +765,179 @@ public class MetadataStore {
     }
 
     /**
-     * Pull initial metadata from the metadata service on startup
-     * Fetches all brokers, topics, and partition information
-     * Called after broker registration to bootstrap metadata
+     * Pull initial metadata from discovered controller
+     * Called by HeartbeatSender after controller discovery and broker registration
+     */
+    public void pullInitialMetadataFromController(String controllerUrl) {
+        int maxAttempts = 5;
+        int attempt = 0;
+        long retryDelay = 2000; // Start with 2 seconds
+
+        while (attempt < maxAttempts) {
+            attempt++;
+            
+            try {
+                String endpoint = controllerUrl + "/api/v1/metadata/cluster";
+                log.info("📡 Pulling initial cluster metadata from controller {} (attempt {}/{})", 
+                    endpoint, attempt, maxAttempts);
+
+                // Fetch cluster metadata
+                Map<String, Object> response = restTemplate.getForObject(endpoint, Map.class);
+
+                if (response != null) {
+                    log.info("✅ Successfully pulled initial metadata from controller: version={}, {} brokers, {} topics",
+                            response.get("version"),
+                            response.get("brokers") != null ? 
+                                ((List<?>) response.get("brokers")).size() : 0,
+                            response.get("topics") != null ? 
+                                ((List<?>) response.get("topics")).size() : 0);
+
+                    // Extract and store metadata version
+                    if (response.get("version") != null) {
+                        this.currentMetadataVersion = ((Number) response.get("version")).longValue();
+                        log.info("Metadata version set to: {}", this.currentMetadataVersion);
+                    }
+
+                    // Extract controller info from response
+                    if (response.get("controllerInfo") != null) {
+                        Map<String, Object> controllerInfo = (Map<String, Object>) response.get("controllerInfo");
+                        Integer controllerId = controllerInfo.get("controllerId") != null ? 
+                            ((Number) controllerInfo.get("controllerId")).intValue() : null;
+                        String newControllerUrl = (String) controllerInfo.get("controllerUrl");
+                        Long controllerTerm = controllerInfo.get("controllerTerm") != null ?
+                            ((Number) controllerInfo.get("controllerTerm")).longValue() : null;
+                        
+                        // Update cached controller info
+                        updateCurrentControllerInfo(controllerId, newControllerUrl, controllerTerm);
+                        
+                        // Verify it matches the controller we're talking to
+                        if (newControllerUrl != null && !newControllerUrl.equals(controllerUrl)) {
+                            log.warn("⚠️ Controller URL mismatch! Expected: {}, Got: {} - Controller may have changed during init",
+                                controllerUrl, newControllerUrl);
+                        }
+                    }
+
+                    // Process brokers
+                    if (response.get("brokers") != null) {
+                        List<Map<String, Object>> brokersList = 
+                            (List<Map<String, Object>>) response.get("brokers");
+                        for (Map<String, Object> brokerMap : brokersList) {
+                            BrokerInfo broker = BrokerInfo.builder()
+                                    .id(((Number) brokerMap.get("id")).intValue())
+                                    .host((String) brokerMap.get("host"))
+                                    .port(((Number) brokerMap.get("port")).intValue())
+                                    .isAlive((Boolean) brokerMap.getOrDefault("alive", true))
+                                    .build();
+                            updateBroker(broker);
+                        }
+                        log.info("Processed {} brokers from initial metadata", brokersList.size());
+                    }
+
+                    // Process topics and partitions using FULL SNAPSHOT REPLACEMENT
+                    if (response.get("topics") != null) {
+                        // Clear all existing partition mappings for full snapshot replacement
+                        int oldPartitionCount = partitionLeaders.size();
+                        log.info("Clearing {} existing partition mappings for full snapshot refresh", 
+                                oldPartitionCount);
+                        
+                        partitionLeaders.clear();
+                        partitionFollowers.clear();
+                        partitionISR.clear();
+                        partitionLeaderEpochs.clear();
+                        
+                        // Rebuild partition mappings from cluster metadata
+                        List<Map<String, Object>> topicsList = 
+                            (List<Map<String, Object>>) response.get("topics");
+                        int totalPartitions = 0;
+                        
+                        for (Map<String, Object> topicMap : topicsList) {
+                            String topicName = (String) topicMap.get("topicName");
+                            List<Map<String, Object>> partitionsList = 
+                                (List<Map<String, Object>>) topicMap.get("partitions");
+                            
+                            if (partitionsList != null) {
+                                for (Map<String, Object> partitionMap : partitionsList) {
+                                    String topic = (String) partitionMap.get("topicName");
+                                    Integer partition = ((Number) partitionMap.get("partitionId")).intValue();
+                                    
+                                    // Extract leader
+                                    Map<String, Object> leaderMap = 
+                                        (Map<String, Object>) partitionMap.get("leader");
+                                    Integer leaderId = leaderMap != null ? 
+                                        ((Number) leaderMap.get("brokerId")).intValue() : null;
+                                    
+                                    // Extract ISR
+                                    List<Map<String, Object>> isrList = 
+                                        (List<Map<String, Object>>) partitionMap.get("isr");
+                                    List<Integer> isrIds = isrList != null ? 
+                                        isrList.stream()
+                                            .map(isr -> ((Number) isr.get("brokerId")).intValue())
+                                            .collect(Collectors.toList()) : 
+                                        Collections.emptyList();
+                                    
+                                    // Extract replicas (followers)
+                                    List<Map<String, Object>> replicasList = 
+                                        (List<Map<String, Object>>) partitionMap.get("replicas");
+                                    List<Integer> replicaIds = replicasList != null ? 
+                                        replicasList.stream()
+                                            .map(replica -> ((Number) replica.get("brokerId")).intValue())
+                                            .collect(Collectors.toList()) : 
+                                        Collections.emptyList();
+                                    
+                                    // Followers are replicas excluding the leader
+                                    List<Integer> followerIds = replicaIds.stream()
+                                        .filter(id -> !id.equals(leaderId))
+                                        .collect(Collectors.toList());
+                                    
+                                    Long leaderEpoch = System.currentTimeMillis();
+                                    
+                                    // Update partition metadata
+                                    updatePartitionLeadership(topic, partition, leaderId, 
+                                        followerIds, isrIds, leaderEpoch);
+                                    totalPartitions++;
+                                }
+                            }
+                        }
+                        
+                        log.info("Partition snapshot refresh completed: {} old partitions → {} new partitions from {} topics", 
+                            oldPartitionCount, totalPartitions, topicsList.size());
+                    }
+
+                    this.lastMetadataUpdateTimestamp = System.currentTimeMillis();
+                    this.lastMetadataRefreshTime = System.currentTimeMillis();
+                    log.info("✅ Initial metadata pull from controller completed successfully");
+                    return; // Success - exit
+
+                } else {
+                    log.warn("Cluster metadata pull returned null response (attempt {}/{})", 
+                        attempt, maxAttempts);
+                }
+
+            } catch (Exception e) {
+                log.error("Failed to pull initial metadata (attempt {}/{}): {}", 
+                    attempt, maxAttempts, e.getMessage(), e);
+                
+                // If not the last attempt, wait before retrying
+                if (attempt < maxAttempts) {
+                    try {
+                        log.info("Retrying metadata pull in {} ms...", retryDelay);
+                        Thread.sleep(retryDelay);
+                        retryDelay *= 2; // Exponential backoff: 2s, 4s, 8s, 16s
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        log.error("Metadata pull retry interrupted");
+                        return;
+                    }
+                }
+            }
+        }
+        
+        log.error("❌ Failed to pull initial metadata from controller after {} attempts!", maxAttempts);
+    }
+
+    /**
+     * OLD METHOD - kept for backward compatibility
+     * Use pullInitialMetadataFromController() instead
      */
     public void pullInitialMetadata() {
         if (metadataServiceUrl == null) {
@@ -677,6 +967,39 @@ public class MetadataStore {
                                 ((List<?>) response.get("brokers")).size() : 0,
                             response.get("topics") != null ? 
                                 ((List<?>) response.get("topics")).size() : 0);
+
+                    // Extract and verify controller info from snapshot
+                    if (response.get("controllerInfo") != null) {
+                        Map<String, Object> controllerInfoMap = (Map<String, Object>) response.get("controllerInfo");
+                        Integer snapshotControllerId = ((Number) controllerInfoMap.get("controllerId")).intValue();
+                        String snapshotControllerUrl = (String) controllerInfoMap.get("controllerUrl");
+                        Long snapshotControllerTerm = controllerInfoMap.get("controllerTerm") != null ? 
+                                ((Number) controllerInfoMap.get("controllerTerm")).longValue() : null;
+                        
+                        log.info("📌 Snapshot controller info: id={}, url={}, term={}", 
+                                snapshotControllerId, snapshotControllerUrl, snapshotControllerTerm);
+                        
+                        // Verify against cached controller (from heartbeat discovery)
+                        if (currentControllerId != null && !currentControllerId.equals(snapshotControllerId)) {
+                            log.warn("⚠️ Controller mismatch! Cached: id={}, url={} | Snapshot: id={}, url={}. Using snapshot data.",
+                                    currentControllerId, currentControllerUrl, 
+                                    snapshotControllerId, snapshotControllerUrl);
+                        }
+                        
+                        // Update controller info from snapshot (snapshot is source of truth)
+                        updateCurrentControllerInfo(snapshotControllerId, snapshotControllerUrl, snapshotControllerTerm);
+                    }
+                    
+                    // Extract active metadata nodes list for failover
+                    if (response.get("activeMetadataNodes") != null) {
+                        List<Map<String, Object>> metadataNodesList = 
+                                (List<Map<String, Object>>) response.get("activeMetadataNodes");
+                        log.info("📋 Active metadata nodes: {}", metadataNodesList.stream()
+                                .map(node -> String.format("id=%s, url=%s, isLeader=%s", 
+                                        node.get("id"), node.get("url"), node.get("isLeader")))
+                                .collect(Collectors.joining(", ")));
+                        // TODO: Store metadata nodes list for load balancing/failover (future enhancement)
+                    }
 
                     // Extract and store metadata version
                     if (response.get("version") != null) {

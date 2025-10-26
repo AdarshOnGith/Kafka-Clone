@@ -770,9 +770,6 @@ public class MetadataServiceImpl implements MetadataService {
                 updateControllerMetadataAndPropagate(storageUpdate);
             }
 
-            // Push the update to the paired storage service
-            pushUpdateToPairedStorageService(storageUpdate);
-
             return MetadataUpdateResponse.builder()
                     .success(true)
                     .processedTimestamp(System.currentTimeMillis())
@@ -1121,65 +1118,6 @@ public class MetadataServiceImpl implements MetadataService {
     /**
      * Push metadata update to the paired storage service
      */
-    private void pushUpdateToPairedStorageService(MetadataUpdateRequest update) {
-        try {
-            // Get this metadata service's ID (placeholder - should be injected)
-            Integer thisServiceId = getCurrentServiceId();
-            if (thisServiceId == null) {
-                log.warn("Cannot determine this service's ID, skipping storage push");
-                return;
-            }
-
-            // Find the paired storage service
-            Integer pairedStorageServiceId = findPairedStorageServiceId(thisServiceId);
-            if (pairedStorageServiceId == null) {
-                log.warn("No paired storage service found for metadata service {}", thisServiceId);
-                return;
-            }
-
-            // Get storage service URL
-            String storageServiceUrl = com.distributedmq.common.config.ServiceDiscovery.getStorageServiceUrl(pairedStorageServiceId);
-            if (storageServiceUrl == null) {
-                log.warn("No URL found for storage service {}", pairedStorageServiceId);
-                return;
-            }
-
-            // Create the update request with version
-            MetadataUpdateRequest versionedUpdate = MetadataUpdateRequest.builder()
-                    .version(System.currentTimeMillis()) // Use timestamp as version for now
-                    .brokers(update.getBrokers())
-                    .partitions(update.getPartitions())
-                    .timestamp(update.getTimestamp())
-                    .build();
-
-            // Push to storage service
-            String endpoint = storageServiceUrl + "/api/v1/storage/metadata";
-            restTemplate.postForObject(endpoint, versionedUpdate, MetadataUpdateResponse.class);
-
-            log.info("Pushed metadata update to paired storage service {}: {}", pairedStorageServiceId, storageServiceUrl);
-
-        } catch (Exception e) {
-            log.error("Failed to push update to paired storage service: {}", e.getMessage());
-        }
-    }
-
-    /**
-     * Find the paired storage service ID for a metadata service
-     */
-    private Integer findPairedStorageServiceId(Integer metadataServiceId) {
-        // Look through all storage services to find the one paired with this metadata service
-        List<com.distributedmq.common.config.ServiceDiscovery.StorageServiceInfo> storageServices =
-            com.distributedmq.common.config.ServiceDiscovery.getAllStorageServices();
-
-        for (com.distributedmq.common.config.ServiceDiscovery.StorageServiceInfo storageService : storageServices) {
-            if (metadataServiceId.equals(storageService.getPairedMetadataServiceId())) {
-                return storageService.getId();
-            }
-        }
-
-        return null;
-    }
-
     @Override
     public void removeFromISR(String topic, Integer partition, Integer brokerId) {
         log.info("Removing broker {} from ISR for partition {}-{}", brokerId, topic, partition);
@@ -1306,6 +1244,30 @@ public class MetadataServiceImpl implements MetadataService {
                 .mapToInt(com.distributedmq.metadata.dto.TopicMetadataResponse::getPartitionCount)
                 .sum();
         
+        // Build controller info
+        Integer controllerId = raftController.getControllerLeaderId();
+        String controllerUrl = com.distributedmq.common.config.ServiceDiscovery.getMetadataServiceUrl(controllerId);
+        Long controllerTerm = raftController.getCurrentTerm();
+        
+        com.distributedmq.common.dto.ControllerInfo controllerInfo = com.distributedmq.common.dto.ControllerInfo.builder()
+                .controllerId(controllerId)
+                .controllerUrl(controllerUrl)
+                .controllerTerm(controllerTerm)
+                .timestamp(System.currentTimeMillis())
+                .build();
+        
+        // Build active metadata nodes list
+        List<com.distributedmq.common.dto.MetadataNodeInfo> activeMetadataNodes = 
+                com.distributedmq.common.config.ServiceDiscovery.getAllMetadataServices().stream()
+                .map(metadataService -> com.distributedmq.common.dto.MetadataNodeInfo.builder()
+                        .id(metadataService.getId())
+                        .url(metadataService.getUrl())
+                        .isLeader(metadataService.getId().equals(controllerId))
+                        .healthy(true) // TODO: Implement health check mechanism
+                        .lastSeen(System.currentTimeMillis())
+                        .build())
+                .collect(Collectors.toList());
+        
         return com.distributedmq.metadata.dto.ClusterMetadataResponse.builder()
                 .version(getMetadataVersion())
                 .brokers(brokers)
@@ -1313,6 +1275,8 @@ public class MetadataServiceImpl implements MetadataService {
                 .timestamp(System.currentTimeMillis())
                 .controllerLeaderId(raftController.getControllerLeaderId())
                 .totalPartitions(totalPartitions)
+                .controllerInfo(controllerInfo)
+                .activeMetadataNodes(activeMetadataNodes)
                 .build();
     }
 }

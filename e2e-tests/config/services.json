@@ -3,16 +3,14 @@
     {
       "id": 1,
       "host": "localhost",
-      "port": 9091,
-      "paired-storage": 1
+      "port": 9091
     }
   ],
   "storage-services": [
     {
       "id": 1,
       "host": "localhost",
-      "port": 8081,
-      "paired-metadata": 1
+      "port": 8081
     }
   ]
 }

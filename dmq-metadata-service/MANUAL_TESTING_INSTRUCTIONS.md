@@ -62,15 +62,25 @@ $body = @{
     topicName = 'test-topic-1'
     partitionCount = 3
     replicationFactor = 1
-    config = @{
-        'retention.ms' = '86400000'
-    }
+    retentionMs = 86400000
+    compressionType = 'none'
+    minInsyncReplicas = 1
 } | ConvertTo-Json
 
 Invoke-RestMethod -Uri 'http://localhost:9091/api/v1/metadata/topics' `
     -Method POST `
     -ContentType 'application/json' `
     -Body $body | ConvertTo-Json -Depth 5
+```
+
+**Important:** Send to the **CONTROLLER** node only! Check which node is leader first:
+```powershell
+# Check which node is the leader (controller)
+Invoke-RestMethod -Uri 'http://localhost:9091/api/v1/metadata/controller' | ConvertTo-Json
+Invoke-RestMethod -Uri 'http://localhost:9092/api/v1/metadata/controller' | ConvertTo-Json
+Invoke-RestMethod -Uri 'http://localhost:9093/api/v1/metadata/controller' | ConvertTo-Json
+
+# Then send the create topic request to the controller URL shown above
 ```
 
 **Watch Terminal 1 logs** for:

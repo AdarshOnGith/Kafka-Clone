@@ -1,7 +1,9 @@
 package com.distributedmq.metadata.controller;
 
+import com.distributedmq.common.dto.ControllerInfo;
 import com.distributedmq.common.dto.MetadataUpdateResponse;
 import com.distributedmq.common.model.TopicMetadata;
+import com.distributedmq.common.config.ServiceDiscovery;
 import com.distributedmq.metadata.coordination.RaftController;
 import com.distributedmq.metadata.dto.CreateTopicRequest;
 import com.distributedmq.metadata.dto.TopicMetadataResponse;
@@ -22,6 +24,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -46,6 +49,43 @@ public class MetadataController {
     private final RaftController raftController;
 
     /**
+     * Get current controller (Raft leader) information
+     * Can be called on any metadata node (leader or follower)
+     * Used by storage nodes for controller discovery
+     */
+    @GetMapping("/controller")
+    public ResponseEntity<ControllerInfo> getControllerInfo() {
+        try {
+            Integer controllerId = raftController.getControllerLeaderId();
+            Long controllerTerm = raftController.getCurrentTerm();
+            
+            // Map controller ID to URL using ServiceDiscovery
+            String controllerUrl = ServiceDiscovery.getMetadataServiceUrl(controllerId);
+            
+            if (controllerUrl == null) {
+                log.error("Controller ID {} not found in services.json", controllerId);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+            }
+            
+            ControllerInfo response = ControllerInfo.builder()
+                    .controllerId(controllerId)
+                    .controllerUrl(controllerUrl)
+                    .controllerTerm(controllerTerm)
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+            
+            log.debug("Returning controller info: ID={}, URL={}, term={}", 
+                    controllerId, controllerUrl, controllerTerm);
+            
+            return ResponseEntity.ok(response);
+            
+        } catch (Exception e) {
+            log.error("Failed to get controller info: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
      * Create a new topic
      * Only controller leader can process this
      */
@@ -53,15 +93,39 @@ public class MetadataController {
     public ResponseEntity<TopicMetadataResponse> createTopic(
             @Validated @RequestBody CreateTopicRequest request) {
         
-        log.info("Received request to create topic: {}", request.getTopicName());
+        log.info("📝 Received request to create topic: {}", request.getTopicName());
+        log.debug("Request details: partitions={}, replicationFactor={}, retentionMs={}", 
+            request.getPartitionCount(), request.getReplicationFactor(), request.getRetentionMs());
+        
+        // Validate required fields
+        if (request.getTopicName() == null || request.getTopicName().trim().isEmpty()) {
+            log.error("❌ Topic name is required");
+            return ResponseEntity.badRequest()
+                .header("X-Error-Message", "Topic name is required")
+                .build();
+        }
+        
+        if (request.getPartitionCount() == null || request.getPartitionCount() <= 0) {
+            log.error("❌ Invalid partition count: {}", request.getPartitionCount());
+            return ResponseEntity.badRequest()
+                .header("X-Error-Message", "Partition count must be greater than 0")
+                .build();
+        }
+        
+        if (request.getReplicationFactor() == null || request.getReplicationFactor() <= 0) {
+            log.error("❌ Invalid replication factor: {}", request.getReplicationFactor());
+            return ResponseEntity.badRequest()
+                .header("X-Error-Message", "Replication factor must be greater than 0")
+                .build();
+        }
         
         // Check if this node is the controller leader
         if (!raftController.isControllerLeader()) {
-            log.warn("This node is not the controller leader. Current leader: {}", 
+            log.warn("⚠️ This node is not the controller leader. Current leader: {}", 
                     raftController.getControllerLeaderId());
-            // TODO: Return redirect to leader or forward request
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .header("X-Controller-Leader", raftController.getControllerLeaderId().toString())
+                    .header("X-Error-Message", "This node is not the controller. Redirect to leader.")
                     .build();
         }
         
@@ -77,14 +141,19 @@ public class MetadataController {
                     .config(metadata.getConfig())
                     .build();
             
+            log.info("✅ Topic created successfully: {}", request.getTopicName());
             return ResponseEntity.ok(response);
             
         } catch (IllegalArgumentException e) {
-            log.warn("Topic creation failed: {}", e.getMessage());
-            return ResponseEntity.badRequest().build();
+            log.warn("⚠️ Topic creation validation failed: {}", e.getMessage());
+            return ResponseEntity.badRequest()
+                .header("X-Error-Message", e.getMessage())
+                .build();
         } catch (Exception e) {
-            log.error("Error creating topic", e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+            log.error("❌ Error creating topic: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .header("X-Error-Message", e.getMessage())
+                .build();
         }
     }
 
@@ -180,18 +249,6 @@ public class MetadataController {
         // TODO: Implement partition leader lookup
         
         return ResponseEntity.ok().build();
-    }
-
-    /**
-     * Get controller leader info
-     */
-    @GetMapping("/controller")
-    public ResponseEntity<ControllerInfo> getControllerInfo() {
-        return ResponseEntity.ok(new ControllerInfo(
-                raftController.isControllerLeader(),
-                raftController.getControllerLeaderId(),
-                raftController.getCurrentTerm()
-        ));
     }
 
     /**
@@ -555,21 +612,5 @@ public class MetadataController {
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException("Invalid broker ID in service ID: " + serviceId);
         }
-    }
-
-    public static class ControllerInfo {
-        private final boolean isLeader;
-        private final Integer leaderId;
-        private final long term;
-        
-        public ControllerInfo(boolean isLeader, Integer leaderId, long term) {
-            this.isLeader = isLeader;
-            this.leaderId = leaderId;
-            this.term = term;
-        }
-        
-        public boolean isLeader() { return isLeader; }
-        public Integer getLeaderId() { return leaderId; }
-        public long getTerm() { return term; }
     }
 }

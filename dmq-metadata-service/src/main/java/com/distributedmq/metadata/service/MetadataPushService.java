@@ -437,4 +437,86 @@ public class MetadataPushService {
                 .isAlive(brokerNode.getStatus() == com.distributedmq.common.model.BrokerStatus.ONLINE)
                 .build();
     }
+
+    /**
+     * Push CONTROLLER_CHANGED notification to all storage nodes
+     * Called when Raft leader election completes
+     * Retries up to 2 times on failure (with 500ms, 1s delays)
+     */
+    public void pushControllerChanged(Integer controllerId, String controllerUrl, Long controllerTerm) {
+        log.info("🔄 Pushing CONTROLLER_CHANGED notification: ID={}, URL={}, term={}", 
+            controllerId, controllerUrl, controllerTerm);
+
+        // Create CONTROLLER_CHANGED request
+        MetadataUpdateRequest request = MetadataUpdateRequest.builder()
+                .updateType(MetadataUpdateRequest.UpdateType.CONTROLLER_CHANGED)
+                .version(metadataStateMachine.getMetadataVersion())
+                .controllerId(controllerId)
+                .controllerUrl(controllerUrl)
+                .controllerTerm(controllerTerm)
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        // Get all storage service URLs
+        List<String> storageUrls = ServiceDiscovery.getAllStorageServices().stream()
+                .map(ServiceDiscovery.StorageServiceInfo::getUrl)
+                .collect(Collectors.toList());
+
+        log.info("Pushing CONTROLLER_CHANGED to {} storage nodes", storageUrls.size());
+
+        // Push to all storage nodes with retry
+        int successCount = 0;
+        for (String url : storageUrls) {
+            boolean success = pushControllerChangedWithRetry(url, request);
+            if (success) {
+                successCount++;
+            }
+        }
+
+        log.info("✅ CONTROLLER_CHANGED push completed: {}/{} storage nodes successful",
+                successCount, storageUrls.size());
+    }
+
+    /**
+     * Push CONTROLLER_CHANGED to single storage node with retry
+     * Retry pattern: Initial attempt + 2 retries (max 3 total)
+     * Delays: 500ms, 1s
+     */
+    private boolean pushControllerChangedWithRetry(String storageUrl, MetadataUpdateRequest request) {
+        int maxAttempts = 3;  // 1 initial + 2 retries
+        long[] retryDelays = {0, 500, 1000};  // Initial: 0ms, Retry1: 500ms, Retry2: 1s
+
+        for (int attempt = 0; attempt < maxAttempts; attempt++) {
+            try {
+                // Wait before retry (not on first attempt)
+                if (attempt > 0) {
+                    Thread.sleep(retryDelays[attempt]);
+                    log.debug("Retrying CONTROLLER_CHANGED push to {} (attempt {}/{})", 
+                        storageUrl, attempt + 1, maxAttempts);
+                }
+
+                MetadataUpdateResponse response = pushToStorageNode(storageUrl, request);
+                
+                if (response != null && response.isSuccess()) {
+                    if (attempt > 0) {
+                        log.info("✅ CONTROLLER_CHANGED push succeeded to {} on attempt {}", 
+                            storageUrl, attempt + 1);
+                    }
+                    return true;
+                }
+
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.error("CONTROLLER_CHANGED push to {} interrupted", storageUrl);
+                return false;
+            } catch (Exception e) {
+                log.warn("CONTROLLER_CHANGED push to {} failed (attempt {}/{}): {}", 
+                    storageUrl, attempt + 1, maxAttempts, e.getMessage());
+            }
+        }
+
+        log.error("❌ CONTROLLER_CHANGED push to {} failed after {} attempts", 
+            storageUrl, maxAttempts);
+        return false;
+    }
 }

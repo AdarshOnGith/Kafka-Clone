@@ -1,5 +1,7 @@
 package com.distributedmq.metadata.dto;
 
+import com.distributedmq.common.dto.ControllerInfo;
+import com.distributedmq.common.dto.MetadataNodeInfo;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -47,4 +49,16 @@ public class ClusterMetadataResponse {
      * Total number of partitions across all topics
      */
     private Integer totalPartitions;
+    
+    /**
+     * Complete controller information (id, url, term, timestamp)
+     * Replaces simple controllerLeaderId for richer failover support
+     */
+    private ControllerInfo controllerInfo;
+    
+    /**
+     * List of all active metadata nodes in the cluster
+     * Helps storage nodes discover available metadata nodes for load balancing and failover
+     */
+    private List<MetadataNodeInfo> activeMetadataNodes;
 }

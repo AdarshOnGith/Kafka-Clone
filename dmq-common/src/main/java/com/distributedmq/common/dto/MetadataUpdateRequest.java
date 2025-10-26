@@ -28,7 +28,8 @@ public class MetadataUpdateRequest {
         LEADER_UPDATE,        // Only leader changed for specific partitions
         TOPIC_CREATED,        // New topic added (add partitions)
         TOPIC_DELETED,        // Topic removed (remove partitions)
-        BROKER_UPDATE         // Broker status changed
+        BROKER_UPDATE,        // Broker status changed
+        CONTROLLER_CHANGED    // Controller (Raft leader) changed
     }
 
     // Type of update (defaults to FULL_SNAPSHOT for backward compatibility)
@@ -46,6 +47,11 @@ public class MetadataUpdateRequest {
 
     // Topics deleted (for TOPIC_DELETED type)
     private List<String> deletedTopics;
+
+    // Controller information (for CONTROLLER_CHANGED type)
+    private Integer controllerId;
+    private String controllerUrl;
+    private Long controllerTerm;
 
     // Timestamp of this metadata update
     private Long timestamp;

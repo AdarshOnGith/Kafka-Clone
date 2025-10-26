@@ -2,6 +2,7 @@ package com.distributedmq.storage.config;
 
 import com.distributedmq.storage.heartbeat.HeartbeatSender;
 import com.distributedmq.storage.replication.MetadataStore;
+import com.distributedmq.storage.service.ControllerDiscoveryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
@@ -48,54 +49,26 @@ public class StorageServiceConfig {
             metadataStore.setLocalBrokerPort(storageConfig.getBroker().getPort());
         }
 
-        // Get metadata service URL from config/services.json (use primary metadata service)
-        ClusterTopologyConfig.MetadataServiceInfo metadataService = 
-            clusterTopologyConfig.getPrimaryMetadataService();
+        // NOTE: Do NOT call registerWithMetadataService() or pullInitialMetadata() here
+        // These will be called by HeartbeatSender.init() after controller discovery
         
-        String metadataServiceUrl;
-        if (metadataService != null && metadataService.getUrl() != null) {
-            metadataServiceUrl = metadataService.getUrl();
-            log.info("Using metadata service from services.json: {}", metadataServiceUrl);
-        } else {
-            // Fallback to hardcoded URL
-            metadataServiceUrl = "http://localhost:9091";
-            log.warn("Metadata service not found in services.json, using fallback: {}", metadataServiceUrl);
-        }
-        
-        metadataStore.setMetadataServiceUrl(metadataServiceUrl);
-
-        // Register this broker with the metadata service
-        metadataStore.registerWithMetadataService();
-
-        // Pull initial metadata after registration
-        metadataStore.pullInitialMetadata();
+        log.info("MetadataStore bean created for broker {}, deferring registration until controller discovery", brokerId);
 
         return metadataStore;
     }
 
     /**
      * Heartbeat Sender Bean
-     * Automatically starts sending heartbeats to metadata service every 5 seconds
+     * Automatically discovers controller and sends heartbeats every 5 seconds
      * Also performs metadata version checking and periodic refresh
      */
     @Bean
-    public HeartbeatSender heartbeatSender(RestTemplate restTemplate, MetadataStore metadataStore) {
+    public HeartbeatSender heartbeatSender(RestTemplate restTemplate, MetadataStore metadataStore, 
+                                          ControllerDiscoveryService controllerDiscoveryService) {
         Integer brokerId = storageConfig.getBroker().getId();
         
-        // Get metadata service URL from config/services.json
-        ClusterTopologyConfig.MetadataServiceInfo metadataService = 
-            clusterTopologyConfig.getPrimaryMetadataService();
-        
-        String metadataServiceUrl;
-        if (metadataService != null && metadataService.getUrl() != null) {
-            metadataServiceUrl = metadataService.getUrl();
-        } else {
-            metadataServiceUrl = "http://localhost:9091";
-            log.warn("Using fallback metadata service URL for heartbeat: {}", metadataServiceUrl);
-        }
-        
-        HeartbeatSender sender = new HeartbeatSender(brokerId, metadataServiceUrl, restTemplate, metadataStore);
-        log.info("Heartbeat sender configured for broker {} → {}", brokerId, metadataServiceUrl);
+        HeartbeatSender sender = new HeartbeatSender(brokerId, restTemplate, metadataStore, controllerDiscoveryService);
+        log.info("Heartbeat sender configured for broker {} with dynamic controller discovery", brokerId);
         
         return sender;
     }

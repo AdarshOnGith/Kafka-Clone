@@ -43,6 +43,9 @@ public class RaftController {
     @Autowired
     private RaftNetworkClient networkClient;
 
+    @Autowired(required = false)
+    private com.distributedmq.metadata.service.MetadataPushService metadataPushService;
+
     // Raft state
     private volatile RaftState state = RaftState.FOLLOWER;
     private volatile long currentTerm = 0;
@@ -295,10 +298,26 @@ public class RaftController {
                 matchIndex.put(peer.getNodeId(), 0L);
             }
 
-            log.info("Node {} became leader for term {}", nodeId, currentTerm);
+            log.info("🎖️ Node {} became leader for term {}", nodeId, currentTerm);
 
             // Start sending heartbeats
             startHeartbeatTimer();
+            
+            // Notify all storage nodes about new controller (async to avoid blocking election)
+            if (metadataPushService != null) {
+                CompletableFuture.runAsync(() -> {
+                    try {
+                        String controllerUrl = com.distributedmq.common.config.ServiceDiscovery.getMetadataServiceUrl(nodeId);
+                        log.info("📢 Pushing CONTROLLER_CHANGED notification: controllerId={}, url={}, term={}", 
+                                nodeId, controllerUrl, currentTerm);
+                        metadataPushService.pushControllerChanged(nodeId, controllerUrl, currentTerm);
+                    } catch (Exception e) {
+                        log.error("Failed to push CONTROLLER_CHANGED notification: {}", e.getMessage(), e);
+                    }
+                });
+            } else {
+                log.warn("MetadataPushService not available, cannot push CONTROLLER_CHANGED notification");
+            }
         }
     }
 

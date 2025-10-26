@@ -25,36 +25,31 @@
         "id": 101,
         "host": "localhost",
         "port": 8081,
-        "url": "http://localhost:8081",
-        "pairedMetadataServiceId": 1
+        "url": "http://localhost:8081"
       },
       {
         "id": 102,
         "host": "localhost",
         "port": 8082,
-        "url": "http://localhost:8082",
-        "pairedMetadataServiceId": 2
+        "url": "http://localhost:8082"
       },
       {
         "id": 103,
         "host": "localhost",
         "port": 8083,
-        "url": "http://localhost:8083",
-        "pairedMetadataServiceId": 3
+        "url": "http://localhost:8083"
       },
       {
         "id": 104,
         "host": "localhost",
         "port": 8084,
-        "url": "http://localhost:8084",
-        "pairedMetadataServiceId": 4
+        "url": "http://localhost:8084"
       },
       {
         "id": 105,
         "host": "localhost",
         "port": 8085,
-        "url": "http://localhost:8085",
-        "pairedMetadataServiceId": 5
+        "url": "http://localhost:8085"
       }
     ]
   },
