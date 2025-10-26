@@ -94,16 +94,18 @@ public class ControllerServiceImpl implements ControllerService {
         log.info("Assigning {} partitions with replication factor {} for topic: {}",
                 partitionCount, replicationFactor, topicName);
 
-        // Get available brokers from state machine (registered via Raft consensus)
-        List<BrokerInfo> availableBrokers = new ArrayList<>(metadataStateMachine.getAllBrokers().values());
+        // Get available ONLINE brokers from state machine (registered via Raft consensus)
+        List<BrokerInfo> availableBrokers = metadataStateMachine.getAllBrokers().values().stream()
+                .filter(broker -> broker.getStatus() == BrokerStatus.ONLINE)
+                .collect(Collectors.toList());
 
         if (availableBrokers.isEmpty()) {
-            throw new IllegalStateException("No brokers available for partition assignment");
+            throw new IllegalStateException("No ONLINE brokers available for partition assignment");
         }
 
         if (availableBrokers.size() < replicationFactor) {
             throw new IllegalStateException(
-                String.format("Not enough brokers for replication factor %d. Available: %d",
+                String.format("Not enough ONLINE brokers for replication factor %d. Available: %d",
                     replicationFactor, availableBrokers.size()));
         }
 

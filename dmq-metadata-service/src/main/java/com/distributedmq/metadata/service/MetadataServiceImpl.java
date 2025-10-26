@@ -87,6 +87,50 @@ public class MetadataServiceImpl implements MetadataService {
             return convertTopicInfoToMetadata(topicInfo);
         }
 
+        // VALIDATE: Partition count must be positive
+        if (request.getPartitionCount() <= 0) {
+            String errorMsg = String.format(
+                "Cannot create topic '%s': Partition count must be greater than 0. Provided: %d",
+                request.getTopicName(), request.getPartitionCount());
+            log.error(errorMsg);
+            throw new IllegalArgumentException(errorMsg);
+        }
+        
+        // VALIDATE: Replication factor must be positive
+        if (request.getReplicationFactor() <= 0) {
+            String errorMsg = String.format(
+                "Cannot create topic '%s': Replication factor must be greater than 0. Provided: %d",
+                request.getTopicName(), request.getReplicationFactor());
+            log.error(errorMsg);
+            throw new IllegalArgumentException(errorMsg);
+        }
+
+        // VALIDATE: Check if we have enough brokers for replication factor BEFORE creating topic
+        List<BrokerInfo> availableBrokers = new ArrayList<>(metadataStateMachine.getAllBrokers().values());
+        
+        // Filter to only ONLINE brokers
+        long onlineBrokerCount = availableBrokers.stream()
+                .filter(broker -> broker.getStatus() == com.distributedmq.common.model.BrokerStatus.ONLINE)
+                .count();
+        
+        if (onlineBrokerCount == 0) {
+            String errorMsg = "Cannot create topic: No brokers are currently online";
+            log.error(errorMsg);
+            throw new IllegalArgumentException(errorMsg);
+        }
+        
+        if (onlineBrokerCount < request.getReplicationFactor()) {
+            String errorMsg = String.format(
+                "Cannot create topic '%s': Insufficient brokers for replication factor %d. " +
+                "Available online brokers: %d. Please reduce replication factor to %d or less.",
+                request.getTopicName(), request.getReplicationFactor(), onlineBrokerCount, onlineBrokerCount);
+            log.error(errorMsg);
+            throw new IllegalArgumentException(errorMsg);
+        }
+        
+        log.info("Validation passed: {} online brokers available for replication factor {}", 
+                onlineBrokerCount, request.getReplicationFactor());
+
         // Create topic configuration with defaults
         TopicConfig config = TopicConfig.builder()
                 .retentionMs(request.getRetentionMs() != null ? request.getRetentionMs() : 604800000L) // 7 days
@@ -116,11 +160,34 @@ public class MetadataServiceImpl implements MetadataService {
         }
 
         // Step 3: Assign partitions to brokers (this now uses Raft internally via AssignPartitionsCommand)
-        List<com.distributedmq.common.model.PartitionMetadata> partitions = controllerService.assignPartitions(
-                request.getTopicName(),
-                request.getPartitionCount(),
-                request.getReplicationFactor()
-        );
+        List<com.distributedmq.common.model.PartitionMetadata> partitions;
+        try {
+            partitions = controllerService.assignPartitions(
+                    request.getTopicName(),
+                    request.getPartitionCount(),
+                    request.getReplicationFactor()
+            );
+        } catch (Exception e) {
+            log.error("Failed to assign partitions for topic {}, rolling back topic registration", request.getTopicName(), e);
+            
+            // Rollback: Delete the orphaned topic from Raft
+            try {
+                DeleteTopicCommand deleteCommand = DeleteTopicCommand.builder()
+                        .topicName(request.getTopicName())
+                        .timestamp(System.currentTimeMillis())
+                        .build();
+                raftController.appendCommand(deleteCommand).get(5, TimeUnit.SECONDS);
+                log.info("Successfully rolled back orphaned topic: {}", request.getTopicName());
+            } catch (Exception rollbackEx) {
+                log.error("Failed to rollback topic {} after partition assignment failure", 
+                         request.getTopicName(), rollbackEx);
+            }
+            
+            // Re-throw the original exception with context
+            throw new IllegalStateException(
+                String.format("Failed to assign partitions for topic '%s': %s", 
+                             request.getTopicName(), e.getMessage()), e);
+        }
 
         // Step 4: Async persist to database (leader only, non-blocking)
         asyncPersistTopic(request.getTopicName());

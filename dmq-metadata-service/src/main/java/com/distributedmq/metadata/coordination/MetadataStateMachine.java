@@ -116,8 +116,9 @@ public class MetadataStateMachine {
                 applyRegisterBroker(cmd);
                 log.info("Successfully applied Map-based RegisterBrokerCommand for broker {}", cmd.getBrokerId());
             } 
-            // Try RegisterTopicCommand
-            else if (map.containsKey("topicName") && map.containsKey("partitionCount") && map.containsKey("replicationFactor")) {
+            // Try RegisterTopicCommand (has topicName, partitionCount, replicationFactor - NOT assignments)
+            else if (map.containsKey("topicName") && map.containsKey("partitionCount") && 
+                     map.containsKey("replicationFactor") && !map.containsKey("assignments")) {
                 log.info("Applying Map-based RegisterTopicCommand: {}", map);
                 
                 // Extract config if present
@@ -150,8 +151,9 @@ public class MetadataStateMachine {
                 applyRegisterTopic(cmd);
                 log.info("Successfully applied Map-based RegisterTopicCommand for topic {}", cmd.getTopicName());
             }
-            // Try AssignPartitionsCommand
-            else if (map.containsKey("topicName") && map.containsKey("assignments")) {
+            // Try AssignPartitionsCommand (has topicName, assignments - NOT partitionCount/replicationFactor)
+            else if (map.containsKey("topicName") && map.containsKey("assignments") && 
+                     !map.containsKey("partitionCount") && !map.containsKey("replicationFactor")) {
                 log.info("Applying Map-based AssignPartitionsCommand: {}", map);
                 
                 @SuppressWarnings("unchecked")
@@ -185,8 +187,8 @@ public class MetadataStateMachine {
                 applyAssignPartitions(cmd);
                 log.info("Successfully applied Map-based AssignPartitionsCommand for topic {}", cmd.getTopicName());
             }
-            // Try DeleteTopicCommand (has topicName but NOT partitionCount/replicationFactor/assignments)
-            else if (map.containsKey("topicName") && 
+            // Try DeleteTopicCommand (has ONLY topicName and timestamp, nothing else)
+            else if (map.containsKey("topicName") && map.size() <= 2 && 
                      !map.containsKey("partitionCount") && 
                      !map.containsKey("replicationFactor") && 
                      !map.containsKey("assignments") &&
@@ -234,9 +236,9 @@ public class MetadataStateMachine {
                 applyUnregisterBroker(cmd);
                 log.info("Successfully applied Map-based UnregisterBrokerCommand for broker {}", cmd.getBrokerId());
             }
-            // Try UpdatePartitionLeaderCommand
+            // Try UpdatePartitionLeaderCommand (has topicName, partitionId, newLeaderId, leaderEpoch - NOT newISR)
             else if (map.containsKey("topicName") && map.containsKey("partitionId") && 
-                     map.containsKey("newLeaderId") && map.containsKey("leaderEpoch")) {
+                     map.containsKey("newLeaderId") && map.containsKey("leaderEpoch") && !map.containsKey("newISR")) {
                 log.info("Applying Map-based UpdatePartitionLeaderCommand: {}", map);
                 
                 UpdatePartitionLeaderCommand cmd = UpdatePartitionLeaderCommand.builder()
@@ -250,8 +252,9 @@ public class MetadataStateMachine {
                 log.info("Successfully applied Map-based UpdatePartitionLeaderCommand for {}-{}", 
                         cmd.getTopicName(), cmd.getPartitionId());
             }
-            // Try UpdateISRCommand
-            else if (map.containsKey("topicName") && map.containsKey("partitionId") && map.containsKey("newISR")) {
+            // Try UpdateISRCommand (has topicName, partitionId, newISR - NOT newLeaderId/leaderEpoch)
+            else if (map.containsKey("topicName") && map.containsKey("partitionId") && 
+                     map.containsKey("newISR") && !map.containsKey("newLeaderId")) {
                 log.info("Applying Map-based UpdateISRCommand: {}", map);
                 
                 @SuppressWarnings("unchecked")
