@@ -77,13 +77,6 @@ controller:
   broker-heartbeat-interval-ms: 3000
   broker-session-timeout-ms: 10000
 
-# Service Pairing Configuration
-dmq:
-  service-pairing:
-    storage-node:
-      url: ${STORAGE_NODE_URL:http://localhost:8081}
-      broker-id: ${BROKER_ID:1}
-
 logging:
   level:
     com.distributedmq: DEBUG

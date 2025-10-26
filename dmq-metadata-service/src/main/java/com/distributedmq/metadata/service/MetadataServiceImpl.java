@@ -1273,4 +1273,46 @@ public class MetadataServiceImpl implements MetadataService {
 
         log.info("Completed ISR update propagation to storage services");
     }
+
+    @Override
+    public long getMetadataVersion() {
+        return metadataStateMachine.getMetadataVersion();
+    }
+
+    @Override
+    public com.distributedmq.metadata.dto.ClusterMetadataResponse getClusterMetadata() {
+        log.debug("Building cluster metadata response");
+        
+        // Get all brokers
+        List<BrokerResponse> brokers = listBrokers();
+        
+        // Get all topics with full metadata
+        List<String> topicNames = listTopics();
+        List<com.distributedmq.metadata.dto.TopicMetadataResponse> topics = topicNames.stream()
+                .map(topicName -> {
+                    try {
+                        TopicMetadata metadata = getTopicMetadata(topicName);
+                        return com.distributedmq.metadata.dto.TopicMetadataResponse.from(metadata);
+                    } catch (Exception e) {
+                        log.error("Failed to get metadata for topic {}: {}", topicName, e.getMessage());
+                        return null;
+                    }
+                })
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        
+        // Calculate total partitions
+        int totalPartitions = topics.stream()
+                .mapToInt(com.distributedmq.metadata.dto.TopicMetadataResponse::getPartitionCount)
+                .sum();
+        
+        return com.distributedmq.metadata.dto.ClusterMetadataResponse.builder()
+                .version(getMetadataVersion())
+                .brokers(brokers)
+                .topics(topics)
+                .timestamp(System.currentTimeMillis())
+                .controllerLeaderId(raftController.getControllerLeaderId())
+                .totalPartitions(totalPartitions)
+                .build();
+    }
 }

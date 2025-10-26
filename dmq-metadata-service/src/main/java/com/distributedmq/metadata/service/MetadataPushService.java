@@ -7,6 +7,7 @@ import com.distributedmq.common.model.BrokerNode;
 import com.distributedmq.common.model.PartitionMetadata;
 import com.distributedmq.common.model.TopicMetadata;
 import com.distributedmq.metadata.config.ServicePairingConfig;
+import com.distributedmq.metadata.coordination.MetadataStateMachine;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -24,6 +25,7 @@ import java.util.stream.Collectors;
 public class MetadataPushService {
 
     private final StorageNodeClient storageNodeClient;
+    private final MetadataStateMachine metadataStateMachine;
 
     /**
      * Push topic metadata to all storage nodes
@@ -65,6 +67,7 @@ public class MetadataPushService {
 
         // Create metadata update request with all brokers
         MetadataUpdateRequest request = MetadataUpdateRequest.builder()
+                .version(metadataStateMachine.getMetadataVersion())
                 .brokers(activeBrokers.stream()
                         .map(this::convertBrokerNodeToBrokerInfo)
                         .collect(Collectors.toList()))
@@ -123,6 +126,7 @@ public class MetadataPushService {
                         .build();
 
         MetadataUpdateRequest request = MetadataUpdateRequest.builder()
+                .version(metadataStateMachine.getMetadataVersion())
                 .partitions(List.of(partitionMetadata))
                 .timestamp(System.currentTimeMillis())
                 .build();
@@ -161,6 +165,7 @@ public class MetadataPushService {
                 .collect(Collectors.toList());
 
         return MetadataUpdateRequest.builder()
+                .version(metadataStateMachine.getMetadataVersion())
                 .brokers(brokerInfos)
                 .partitions(partitionMetadatas)
                 .timestamp(System.currentTimeMillis())

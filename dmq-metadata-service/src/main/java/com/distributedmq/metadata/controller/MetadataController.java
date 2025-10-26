@@ -15,6 +15,7 @@ import com.distributedmq.metadata.dto.ConsistencyCheckResponse;
 import com.distributedmq.metadata.dto.SyncTriggerRequest;
 import com.distributedmq.metadata.dto.SyncTriggerResponse;
 import com.distributedmq.metadata.dto.FullSyncResponse;
+import com.distributedmq.metadata.dto.ClusterMetadataResponse;
 import com.distributedmq.metadata.service.MetadataService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -191,6 +192,43 @@ public class MetadataController {
                 raftController.getControllerLeaderId(),
                 raftController.getCurrentTerm()
         ));
+    }
+
+    /**
+     * Get current metadata version
+     * Used by storage services to check if their metadata is up-to-date
+     */
+    @GetMapping("/version")
+    public ResponseEntity<Map<String, Long>> getMetadataVersion() {
+        log.debug("Fetching current metadata version");
+        
+        try {
+            long version = metadataService.getMetadataVersion();
+            return ResponseEntity.ok(Map.of("version", version));
+            
+        } catch (Exception e) {
+            log.error("Error fetching metadata version", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Get full cluster metadata
+     * Returns all brokers, topics, and partitions with complete information
+     * Used by storage services on startup and for periodic refresh
+     */
+    @GetMapping("/cluster")
+    public ResponseEntity<ClusterMetadataResponse> getClusterMetadata() {
+        log.debug("Fetching full cluster metadata");
+        
+        try {
+            ClusterMetadataResponse response = metadataService.getClusterMetadata();
+            return ResponseEntity.ok(response);
+            
+        } catch (Exception e) {
+            log.error("Error fetching cluster metadata", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
     }
 
     /**

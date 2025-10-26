@@ -38,6 +38,7 @@ public class ReplicationManager {
     private final StorageConfig config;
     private final MetadataStore metadataStore;
     private final ReplicaLagTracker lagTracker; // Phase 1: ISR Lag Monitoring
+    private final FollowerProgressTracker progressTracker; // Catch-up mechanism: track follower progress
 
     // Circuit breaker state per follower broker
     private final ConcurrentHashMap<Integer, CircuitBreakerState> circuitBreakers = new ConcurrentHashMap<>();
@@ -277,6 +278,17 @@ public class ReplicationManager {
         ReplicationResponse replicationResponse = response.getBody();
 
         if (replicationResponse != null && replicationResponse.isSuccess()) {
+            // Calculate follower's new LEO
+            Long followerLEO = replicationResponse.getBaseOffset() + replicationResponse.getMessageCount();
+            
+            // Update follower progress tracker (for catch-up mechanism)
+            progressTracker.updateFollowerProgress(
+                request.getTopic(), 
+                request.getPartition(), 
+                follower.getId(), 
+                followerLEO
+            );
+            
             // Convert to ack
             return ReplicationAck.builder()
                     .topic(request.getTopic())
@@ -284,7 +296,7 @@ public class ReplicationManager {
                     .followerId(follower.getId())
                     .baseOffset(request.getBaseOffset())
                     .messageCount(request.getMessages().size())
-                    .logEndOffset(replicationResponse.getBaseOffset() + replicationResponse.getMessageCount())
+                    .logEndOffset(followerLEO)
                     .highWaterMark(replicationResponse.getBaseOffset() + replicationResponse.getMessageCount())
                     .success(true)
                     .errorCode(ReplicationAck.ErrorCode.NONE)
@@ -446,5 +458,40 @@ public class ReplicationManager {
         }
 
         return true;
+    }
+
+    /**
+     * Send catch-up replication to a follower (called by CatchUpReplicator)
+     * This is a synchronous method used specifically for catch-up scenarios.
+     * 
+     * @param follower The follower broker to send to
+     * @param request The replication request with catch-up data
+     * @return true if replication succeeded, false otherwise
+     */
+    public boolean sendCatchUpReplication(BrokerInfo follower, ReplicationRequest request) {
+        log.debug("Sending catch-up replication to follower {}: topic={}, partition={}, baseOffset={}, messageCount={}",
+                follower.getId(), request.getTopic(), request.getPartition(), 
+                request.getBaseOffset(), request.getMessages().size());
+
+        try {
+            // Use existing replicateToFollower method which has retry logic and circuit breaker
+            ReplicationAck ack = replicateToFollower(follower, request);
+
+            if (ack.isSuccess()) {
+                log.debug("✓ Catch-up replication successful to follower {}: offset {} -> {}",
+                        follower.getId(), request.getBaseOffset(), 
+                        request.getBaseOffset() + request.getMessages().size());
+                return true;
+            } else {
+                log.warn("✗ Catch-up replication failed to follower {}: {}",
+                        follower.getId(), ack.getErrorMessage());
+                return false;
+            }
+
+        } catch (Exception e) {
+            log.error("Exception during catch-up replication to follower {}: {}",
+                    follower.getId(), e.getMessage(), e);
+            return false;
+        }
     }
 }

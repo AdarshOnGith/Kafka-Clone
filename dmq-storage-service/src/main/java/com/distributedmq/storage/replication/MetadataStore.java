@@ -456,6 +456,153 @@ public class MetadataStore {
     }
 
     /**
+     * Pull initial metadata from the metadata service on startup
+     * Fetches all brokers, topics, and partition information
+     * Called after broker registration to bootstrap metadata
+     */
+    public void pullInitialMetadata() {
+        if (metadataServiceUrl == null) {
+            log.warn("Metadata service URL not configured, cannot pull initial metadata");
+            return;
+        }
+
+        int maxAttempts = 5;
+        int attempt = 0;
+        long retryDelay = 2000; // Start with 2 seconds
+
+        while (attempt < maxAttempts) {
+            attempt++;
+            
+            try {
+                String endpoint = metadataServiceUrl + "/api/v1/metadata/cluster";
+                log.info("Pulling initial cluster metadata from {} (attempt {}/{})", 
+                    endpoint, attempt, maxAttempts);
+
+                // Fetch cluster metadata
+                Map<String, Object> response = restTemplate.getForObject(endpoint, Map.class);
+
+                if (response != null) {
+                    log.info("✅ Successfully pulled initial metadata: version={}, {} brokers, {} topics",
+                            response.get("version"),
+                            response.get("brokers") != null ? 
+                                ((List<?>) response.get("brokers")).size() : 0,
+                            response.get("topics") != null ? 
+                                ((List<?>) response.get("topics")).size() : 0);
+
+                    // Extract and store metadata version
+                    if (response.get("version") != null) {
+                        this.currentMetadataVersion = ((Number) response.get("version")).longValue();
+                        log.info("Metadata version set to: {}", this.currentMetadataVersion);
+                    }
+
+                    // Process brokers
+                    if (response.get("brokers") != null) {
+                        List<Map<String, Object>> brokersList = 
+                            (List<Map<String, Object>>) response.get("brokers");
+                        for (Map<String, Object> brokerMap : brokersList) {
+                            BrokerInfo broker = BrokerInfo.builder()
+                                    .id(((Number) brokerMap.get("id")).intValue())
+                                    .host((String) brokerMap.get("host"))
+                                    .port(((Number) brokerMap.get("port")).intValue())
+                                    .isAlive((Boolean) brokerMap.getOrDefault("alive", true))
+                                    .build();
+                            updateBroker(broker);
+                        }
+                        log.info("Processed {} brokers from initial metadata", brokersList.size());
+                    }
+
+                    // Process topics and partitions
+                    if (response.get("topics") != null) {
+                        List<Map<String, Object>> topicsList = 
+                            (List<Map<String, Object>>) response.get("topics");
+                        int totalPartitions = 0;
+                        
+                        for (Map<String, Object> topicMap : topicsList) {
+                            String topicName = (String) topicMap.get("topicName");
+                            List<Map<String, Object>> partitionsList = 
+                                (List<Map<String, Object>>) topicMap.get("partitions");
+                            
+                            if (partitionsList != null) {
+                                for (Map<String, Object> partitionMap : partitionsList) {
+                                    String topic = (String) partitionMap.get("topicName");
+                                    Integer partition = ((Number) partitionMap.get("partitionId")).intValue();
+                                    
+                                    // Extract leader
+                                    Map<String, Object> leaderMap = 
+                                        (Map<String, Object>) partitionMap.get("leader");
+                                    Integer leaderId = leaderMap != null ? 
+                                        ((Number) leaderMap.get("brokerId")).intValue() : null;
+                                    
+                                    // Extract ISR
+                                    List<Map<String, Object>> isrList = 
+                                        (List<Map<String, Object>>) partitionMap.get("isr");
+                                    List<Integer> isrIds = isrList != null ? 
+                                        isrList.stream()
+                                            .map(isr -> ((Number) isr.get("brokerId")).intValue())
+                                            .collect(Collectors.toList()) : 
+                                        Collections.emptyList();
+                                    
+                                    // Extract replicas (followers)
+                                    List<Map<String, Object>> replicasList = 
+                                        (List<Map<String, Object>>) partitionMap.get("replicas");
+                                    List<Integer> replicaIds = replicasList != null ? 
+                                        replicasList.stream()
+                                            .map(replica -> ((Number) replica.get("brokerId")).intValue())
+                                            .collect(Collectors.toList()) : 
+                                        Collections.emptyList();
+                                    
+                                    // Followers are replicas excluding the leader
+                                    List<Integer> followerIds = replicaIds.stream()
+                                        .filter(id -> !id.equals(leaderId))
+                                        .collect(Collectors.toList());
+                                    
+                                    Long leaderEpoch = System.currentTimeMillis();
+                                    
+                                    // Update partition metadata
+                                    updatePartitionLeadership(topic, partition, leaderId, 
+                                        followerIds, isrIds, leaderEpoch);
+                                    totalPartitions++;
+                                }
+                            }
+                        }
+                        
+                        log.info("Processed {} topics with {} total partitions from initial metadata", 
+                            topicsList.size(), totalPartitions);
+                    }
+
+                    this.lastMetadataUpdateTimestamp = System.currentTimeMillis();
+                    log.info("✅ Initial metadata pull completed successfully");
+                    return; // Success - exit
+
+                } else {
+                    log.warn("Cluster metadata pull returned null response (attempt {}/{})", 
+                        attempt, maxAttempts);
+                }
+
+            } catch (Exception e) {
+                log.error("Failed to pull initial metadata (attempt {}/{}): {}", 
+                    attempt, maxAttempts, e.getMessage(), e);
+                
+                // If not the last attempt, wait before retrying
+                if (attempt < maxAttempts) {
+                    try {
+                        log.info("Retrying metadata pull in {} ms...", retryDelay);
+                        Thread.sleep(retryDelay);
+                        retryDelay *= 2; // Exponential backoff: 2s, 4s, 8s, 16s
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        log.error("Metadata pull retry interrupted");
+                        return;
+                    }
+                }
+            }
+        }
+        
+        log.error("❌ Failed to pull initial metadata after {} attempts. Storage service will have stale metadata!", 
+            maxAttempts);
+    }
+
+    /**
      * Get current metadata version
      */
     public Long getCurrentMetadataVersion() {

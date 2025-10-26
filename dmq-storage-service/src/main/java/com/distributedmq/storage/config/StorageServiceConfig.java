@@ -67,6 +67,9 @@ public class StorageServiceConfig {
         // Register this broker with the metadata service
         metadataStore.registerWithMetadataService();
 
+        // Pull initial metadata after registration
+        metadataStore.pullInitialMetadata();
+
         return metadataStore;
     }
 

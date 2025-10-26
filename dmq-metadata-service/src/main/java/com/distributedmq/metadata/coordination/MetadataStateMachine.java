@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 /**
@@ -26,6 +27,9 @@ public class MetadataStateMachine {
     private final Map<Integer, BrokerInfo> brokers = new ConcurrentHashMap<>();
     private final Map<String, TopicInfo> topics = new ConcurrentHashMap<>();
     private final Map<String, Map<Integer, PartitionInfo>> partitions = new ConcurrentHashMap<>();
+    
+    // Metadata version - incremented on every state change for tracking staleness
+    private final AtomicLong metadataVersion = new AtomicLong(0);
 
     /**
      * Apply a committed log entry to the metadata state
@@ -280,6 +284,17 @@ public class MetadataStateMachine {
             log.error("Unknown command type: {} - {}", command.getClass().getSimpleName(), command);
             log.error("Command toString: {}", command.toString());
         }
+        
+        // Increment metadata version after successfully applying any command
+        long newVersion = metadataVersion.incrementAndGet();
+        log.debug("Metadata version incremented to: {}", newVersion);
+    }
+
+    /**
+     * Get current metadata version
+     */
+    public long getMetadataVersion() {
+        return metadataVersion.get();
     }
 
     /**

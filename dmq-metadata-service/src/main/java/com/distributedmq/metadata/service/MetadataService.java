@@ -99,6 +99,19 @@ public interface MetadataService {
      */
     boolean isInISR(String topic, Integer partition, Integer brokerId);
 
+    /**
+     * Get current metadata version
+     * Used by storage services to check if their metadata is up-to-date
+     */
+    long getMetadataVersion();
+
+    /**
+     * Get full cluster metadata
+     * Returns all brokers and topics with complete partition information
+     * Used by storage services on startup and for periodic refresh
+     */
+    com.distributedmq.metadata.dto.ClusterMetadataResponse getClusterMetadata();
+
     // TODO: Add partition management methods
     // TODO: Add consumer group methods
     // TODO: Add offset management methods
