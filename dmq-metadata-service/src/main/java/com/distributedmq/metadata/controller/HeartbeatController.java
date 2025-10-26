@@ -1,6 +1,8 @@
 package com.distributedmq.metadata.controller;
 
+import com.distributedmq.common.dto.HeartbeatResponse;
 import com.distributedmq.metadata.service.HeartbeatService;
+import com.distributedmq.metadata.service.MetadataService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -17,24 +19,45 @@ import org.springframework.web.bind.annotation.*;
 public class HeartbeatController {
 
     private final HeartbeatService heartbeatService;
+    private final MetadataService metadataService;
 
     /**
      * Receive heartbeat from a storage service (broker)
+     * Returns current metadata version for staleness detection
      * 
      * @param brokerId The ID of the broker sending the heartbeat
-     * @return 200 OK if heartbeat processed successfully
+     * @return HeartbeatResponse with success status and current metadata version
      */
     @PostMapping("/{brokerId}")
-    public ResponseEntity<String> receiveHeartbeat(@PathVariable Integer brokerId) {
+    public ResponseEntity<HeartbeatResponse> receiveHeartbeat(@PathVariable Integer brokerId) {
         log.debug("Received heartbeat from broker: {}", brokerId);
         
         try {
             heartbeatService.processHeartbeat(brokerId);
-            return ResponseEntity.ok("Heartbeat received");
+            
+            // Get current metadata version
+            long metadataVersion = metadataService.getMetadataVersion();
+            
+            HeartbeatResponse response = HeartbeatResponse.builder()
+                    .success(true)
+                    .metadataVersion(metadataVersion)
+                    .message("Heartbeat received")
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+            
+            log.debug("Heartbeat ACK for broker {}: version={}", brokerId, metadataVersion);
+            return ResponseEntity.ok(response);
+            
         } catch (Exception e) {
             log.error("Failed to process heartbeat from broker {}: {}", brokerId, e.getMessage(), e);
-            return ResponseEntity.internalServerError()
-                    .body("Failed to process heartbeat: " + e.getMessage());
+            
+            HeartbeatResponse errorResponse = HeartbeatResponse.builder()
+                    .success(false)
+                    .message("Failed to process heartbeat: " + e.getMessage())
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+            
+            return ResponseEntity.internalServerError().body(errorResponse);
         }
     }
 

@@ -57,6 +57,9 @@ public class MetadataStore {
     // Last metadata update timestamp
     private volatile Long lastMetadataUpdateTimestamp = 0L;
 
+    // Last metadata refresh time (for periodic refresh tracking)
+    private volatile Long lastMetadataRefreshTime = System.currentTimeMillis();
+
     public void setLocalBrokerId(Integer brokerId) {
         this.localBrokerId = brokerId;
         log.info("Local broker ID set to: {}", brokerId);
@@ -101,6 +104,9 @@ public class MetadataStore {
         }
         this.lastMetadataUpdateTimestamp = request.getTimestamp() != null ?
                 request.getTimestamp() : System.currentTimeMillis();
+        
+        // Reset refresh time when metadata is updated via push
+        this.lastMetadataRefreshTime = System.currentTimeMillis();
 
         // Update broker information
         if (request.getBrokers() != null) {
@@ -571,6 +577,7 @@ public class MetadataStore {
                     }
 
                     this.lastMetadataUpdateTimestamp = System.currentTimeMillis();
+                    this.lastMetadataRefreshTime = System.currentTimeMillis();
                     log.info("✅ Initial metadata pull completed successfully");
                     return; // Success - exit
 
@@ -614,6 +621,13 @@ public class MetadataStore {
      */
     public Long getLastMetadataUpdateTimestamp() {
         return lastMetadataUpdateTimestamp;
+    }
+
+    /**
+     * Get last metadata refresh time (for periodic refresh tracking)
+     */
+    public Long getLastMetadataRefreshTime() {
+        return lastMetadataRefreshTime;
     }
 
     // TODO: Add methods to sync with metadata service (pull model - request metadata)

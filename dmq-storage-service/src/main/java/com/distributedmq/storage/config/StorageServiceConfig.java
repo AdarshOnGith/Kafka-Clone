@@ -76,9 +76,10 @@ public class StorageServiceConfig {
     /**
      * Heartbeat Sender Bean
      * Automatically starts sending heartbeats to metadata service every 5 seconds
+     * Also performs metadata version checking and periodic refresh
      */
     @Bean
-    public HeartbeatSender heartbeatSender(RestTemplate restTemplate) {
+    public HeartbeatSender heartbeatSender(RestTemplate restTemplate, MetadataStore metadataStore) {
         Integer brokerId = storageConfig.getBroker().getId();
         
         // Get metadata service URL from config/services.json
@@ -93,7 +94,7 @@ public class StorageServiceConfig {
             log.warn("Using fallback metadata service URL for heartbeat: {}", metadataServiceUrl);
         }
         
-        HeartbeatSender sender = new HeartbeatSender(brokerId, metadataServiceUrl, restTemplate);
+        HeartbeatSender sender = new HeartbeatSender(brokerId, metadataServiceUrl, restTemplate, metadataStore);
         log.info("Heartbeat sender configured for broker {} → {}", brokerId, metadataServiceUrl);
         
         return sender;
