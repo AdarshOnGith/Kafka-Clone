@@ -77,8 +77,8 @@ public class GetLeaderCommand implements Command {
         String state = json.has("state") ? json.get("state").asText() : "UNKNOWN";
         System.out.println("State:           " + state);
         
-        // Safely get isLeader
-        boolean isLeader = json.has("isLeader") && json.get("isLeader").asBoolean();
+        // Safely get isLeader (backend returns "leader", not "isLeader")
+        boolean isLeader = json.has("leader") && json.get("leader").asBoolean();
         System.out.println("Is Leader:       " + (isLeader ? "YES" : "NO"));
         System.out.println();
         
