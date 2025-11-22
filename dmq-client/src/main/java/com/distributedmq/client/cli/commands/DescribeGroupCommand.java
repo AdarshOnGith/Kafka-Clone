@@ -13,7 +13,7 @@ import java.util.Map;
 
 /**
  * Command to describe a consumer group
- * Usage: mycli describe-group --group <group-id>
+ * Usage: mycli describe-group --topic <topic> --app-id <app-id>
  */
 public class DescribeGroupCommand implements Command {
     
@@ -29,10 +29,15 @@ public class DescribeGroupCommand implements Command {
             return;
         }
         
-        String groupId = parser.getOption("group");
-        if (groupId == null) {
-            throw new IllegalArgumentException("Missing required argument: --group");
+        String topic = parser.getOption("topic");
+        String appId = parser.getOption("app-id");
+        
+        if (topic == null || appId == null) {
+            throw new IllegalArgumentException("Missing required arguments: --topic and --app-id are required");
         }
+        
+        // Generate groupId from topic and appId (matches backend logic)
+        String groupId = "G_" + topic + "_" + appId;
         
         String metadataUrl = parser.getOption("metadata-url");
         
@@ -43,7 +48,10 @@ public class DescribeGroupCommand implements Command {
         ConsumerGroupResponse group = client.describeConsumerGroup(groupId);
         
         if (group == null) {
-            System.out.println("[ERROR] Consumer group not found: " + groupId);
+            System.out.println("[ERROR] Consumer group not found for topic '" + topic + "' and app ID '" + appId + "'");
+            System.out.println();
+            System.out.println("Make sure the consumer group exists. You can list all groups with:");
+            System.out.println("  mycli list-groups");
             return;
         }
         
@@ -75,16 +83,17 @@ public class DescribeGroupCommand implements Command {
     public void printHelp() {
         System.out.println("Describe a consumer group");
         System.out.println();
-        System.out.println("Usage: mycli describe-group --group <group-id> [options]");
+        System.out.println("Usage: mycli describe-group --topic <topic> --app-id <app-id> [options]");
         System.out.println();
         System.out.println("Required Arguments:");
-        System.out.println("  --group <group-id>        Consumer group ID");
+        System.out.println("  --topic <topic>           Topic name");
+        System.out.println("  --app-id <app-id>         Application ID (consumer group identifier)");
         System.out.println();
         System.out.println("Optional Arguments:");
         System.out.println("  --metadata-url <url>      Metadata service URL (default: from config)");
         System.out.println();
         System.out.println("Examples:");
-        System.out.println("  mycli describe-group --group order-processors");
-        System.out.println("  mycli describe-group --group analytics-consumers --metadata-url http://localhost:9091");
+        System.out.println("  mycli describe-group --topic orders --app-id order-processor");
+        System.out.println("  mycli describe-group --topic events --app-id analytics --metadata-url http://localhost:9092");
     }
 }

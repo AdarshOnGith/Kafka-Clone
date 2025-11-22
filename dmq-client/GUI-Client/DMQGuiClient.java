@@ -78,8 +78,8 @@ public class DMQGuiClient extends JFrame {
     private JButton describeTopicBtn;
     
     // Consumer Groups Tab
-    private JTextField groupId;
-    private JTextField appId;
+    private JTextField groupTopic;
+    private JTextField groupAppId;
     private JButton listGroupsBtn;
     private JButton describeGroupBtn;
     
@@ -353,18 +353,19 @@ public class DMQGuiClient extends JFrame {
         
         // Group ID
         gbc.gridx = 0; gbc.gridy = 0;
-        formPanel.add(new JLabel("Group ID:"), gbc);
+        formPanel.add(new JLabel("Topic:"), gbc);
         gbc.gridx = 1; gbc.weightx = 1.0;
-        groupId = new JTextField(20);
-        formPanel.add(groupId, gbc);
+        groupTopic = new JTextField(20);
+        groupTopic.setToolTipText("Topic name for the consumer group");
+        formPanel.add(groupTopic, gbc);
         
         // App ID
         gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0;
-        formPanel.add(new JLabel("App ID (optional):"), gbc);
+        formPanel.add(new JLabel("App ID:"), gbc);
         gbc.gridx = 1; gbc.weightx = 1.0;
-        appId = new JTextField(20);
-        appId.setToolTipText("Application ID for consumer group operations");
-        formPanel.add(appId, gbc);
+        groupAppId = new JTextField(20);
+        groupAppId.setToolTipText("Application ID (consumer group identifier)");
+        formPanel.add(groupAppId, gbc);
         
         panel.add(formPanel, BorderLayout.CENTER);
         
@@ -559,20 +560,29 @@ public class DMQGuiClient extends JFrame {
     }
     
     private void listConsumerGroups() {
-        // Use CLI command
-        executeCliCommand("list-groups");
+        String metadataUrl = metadataServiceUrl.getText().trim();
+        // Use CLI command with metadata URL
+        executeCliCommand("list-groups --metadata-url " + metadataUrl);
     }
     
     private void describeConsumerGroup() {
-        String group = groupId.getText().trim();
+        String topic = groupTopic.getText().trim();
+        String appId = groupAppId.getText().trim();
         
-        if (group.isEmpty()) {
-            showError("Group ID is required!");
+        if (topic.isEmpty() || appId.isEmpty()) {
+            showError("Topic and App ID are required!");
             return;
         }
         
-        // Use CLI command
-        executeCliCommand("describe-group --group " + group);
+        String metadataUrl = metadataServiceUrl.getText().trim();
+        
+        // Use CLI command with topic and app-id
+        StringBuilder cmd = new StringBuilder();
+        cmd.append("describe-group --topic ").append(topic);
+        cmd.append(" --app-id ").append(appId);
+        cmd.append(" --metadata-url ").append(metadataUrl);
+        
+        executeCliCommand(cmd.toString());
     }
     
     private void getRaftLeader() {

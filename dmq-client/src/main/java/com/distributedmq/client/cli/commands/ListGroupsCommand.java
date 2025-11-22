@@ -50,7 +50,7 @@ public class ListGroupsCommand implements Command {
         System.out.println();
         System.out.println("Total groups: " + groups.size());
         System.out.println();
-        System.out.println("Use 'mycli describe-group --group <group-id>' for detailed information");
+        System.out.println("Use 'mycli describe-group --topic <topic> --app-id <app-id>' for detailed information");
     }
     
     private String truncate(String str, int maxLength) {
