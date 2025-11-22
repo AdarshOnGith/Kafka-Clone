@@ -64,10 +64,22 @@ public class GetLeaderCommand implements Command {
         System.out.println("RAFT CLUSTER STATUS");
         System.out.println("========================================");
         System.out.println();
-        System.out.println("Queried Node:    Node " + json.get("nodeId").asInt() + " (" + metadataUrl + ")");
-        System.out.println("Current Term:    " + json.get("currentTerm").asLong());
-        System.out.println("State:           " + json.get("state").asText());
-        System.out.println("Is Leader:       " + (json.get("isLeader").asBoolean() ? "YES" : "NO"));
+        
+        // Safely get node ID
+        int nodeId = json.has("nodeId") ? json.get("nodeId").asInt() : -1;
+        System.out.println("Queried Node:    Node " + nodeId + " (" + metadataUrl + ")");
+        
+        // Safely get term
+        long term = json.has("currentTerm") ? json.get("currentTerm").asLong() : 0;
+        System.out.println("Current Term:    " + term);
+        
+        // Safely get state
+        String state = json.has("state") ? json.get("state").asText() : "UNKNOWN";
+        System.out.println("State:           " + state);
+        
+        // Safely get isLeader
+        boolean isLeader = json.has("isLeader") && json.get("isLeader").asBoolean();
+        System.out.println("Is Leader:       " + (isLeader ? "YES" : "NO"));
         System.out.println();
         
         // Leader information
@@ -75,7 +87,7 @@ public class GetLeaderCommand implements Command {
         if (json.has("leaderId") && !json.get("leaderId").isNull()) {
             int leaderId = json.get("leaderId").asInt();
             System.out.println("  Leader Node:   Node " + leaderId);
-            if (json.get("isLeader").asBoolean()) {
+            if (isLeader) {
                 System.out.println("  Status:        THIS NODE IS THE LEADER");
             } else {
                 System.out.println("  Status:        This node is a FOLLOWER");
@@ -88,10 +100,10 @@ public class GetLeaderCommand implements Command {
         System.out.println();
         
         // Additional metrics
-        if (json.has("commitIndex")) {
+        if (json.has("commitIndex") && !json.get("commitIndex").isNull()) {
             System.out.println("Commit Index:    " + json.get("commitIndex").asLong());
         }
-        if (json.has("lastApplied")) {
+        if (json.has("lastApplied") && !json.get("lastApplied").isNull()) {
             System.out.println("Last Applied:    " + json.get("lastApplied").asLong());
         }
         

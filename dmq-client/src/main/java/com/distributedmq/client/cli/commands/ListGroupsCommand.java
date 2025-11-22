@@ -34,19 +34,19 @@ public class ListGroupsCommand implements Command {
             return;
         }
         
-        System.out.println("╔════════════════════════════════════════════════════════════════════════════╗");
-        System.out.println("║                           Consumer Groups                                  ║");
-        System.out.println("╠════════════════════════════════════════════════════════════════════════════╣");
-        System.out.printf("║ %-40s %-30s ║%n", "Group ID", "Topic");
-        System.out.println("╠════════════════════════════════════════════════════════════════════════════╣");
+        System.out.println("================================================================================");
+        System.out.println("                           Consumer Groups                                   ");
+        System.out.println("================================================================================");
+        System.out.printf("%-40s %-30s%n", "Group ID", "Topic");
+        System.out.println("--------------------------------------------------------------------------------");
         
         for (ConsumerGroupResponse group : groups) {
-            System.out.printf("║ %-40s %-30s ║%n",
+            System.out.printf("%-40s %-30s%n",
                     truncate(group.getGroupId(), 40),
                     truncate(group.getTopic(), 30));
         }
         
-        System.out.println("╚════════════════════════════════════════════════════════════════════════════╝");
+        System.out.println("================================================================================");
         System.out.println();
         System.out.println("Total groups: " + groups.size());
         System.out.println();

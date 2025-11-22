@@ -72,6 +72,11 @@ public class DMQGuiClient extends JFrame {
     private JButton listTopicsBtn;
     private JButton describeTopicBtn;
     
+    // Consumer Groups Tab
+    private JTextField groupId;
+    private JButton listGroupsBtn;
+    private JButton describeGroupBtn;
+    
     public DMQGuiClient() {
         setTitle("DMQ GUI Client - Enhanced");
         setSize(1200, 850);
@@ -111,6 +116,7 @@ public class DMQGuiClient extends JFrame {
         tabbedPane.addTab("Producer", createProducerPanel());
         tabbedPane.addTab("Consumer", createConsumerPanel());
         tabbedPane.addTab("Topics", createTopicPanel());
+        tabbedPane.addTab("Consumer Groups", createConsumerGroupsPanel());
         add(tabbedPane, BorderLayout.CENTER);
         
         // Bottom - Output Area (LARGER)
@@ -303,6 +309,41 @@ public class DMQGuiClient extends JFrame {
         return panel;
     }
     
+    private JPanel createConsumerGroupsPanel() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBorder(new EmptyBorder(10, 10, 10, 10));
+        
+        // Form Panel
+        JPanel formPanel = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        
+        // Group ID
+        gbc.gridx = 0; gbc.gridy = 0;
+        formPanel.add(new JLabel("Group ID:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        groupId = new JTextField(20);
+        formPanel.add(groupId, gbc);
+        
+        panel.add(formPanel, BorderLayout.CENTER);
+        
+        // Button Panel
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        
+        listGroupsBtn = new JButton("List All Consumer Groups");
+        listGroupsBtn.addActionListener(e -> listConsumerGroups());
+        buttonPanel.add(listGroupsBtn);
+        
+        describeGroupBtn = new JButton("Describe Consumer Group");
+        describeGroupBtn.addActionListener(e -> describeConsumerGroup());
+        buttonPanel.add(describeGroupBtn);
+        
+        panel.add(buttonPanel, BorderLayout.SOUTH);
+        
+        return panel;
+    }
+    
     private void produceSingleMessage() {
         String topic = producerTopic.getText().trim();
         String key = producerKey.getText().trim();
@@ -416,6 +457,23 @@ public class DMQGuiClient extends JFrame {
         
         // Use CLI command
         executeCliCommand("describe-topic --name " + name);
+    }
+    
+    private void listConsumerGroups() {
+        // Use CLI command
+        executeCliCommand("list-groups");
+    }
+    
+    private void describeConsumerGroup() {
+        String group = groupId.getText().trim();
+        
+        if (group.isEmpty()) {
+            showError("Group ID is required!");
+            return;
+        }
+        
+        // Use CLI command
+        executeCliCommand("describe-group --group " + group);
     }
     
     private void getRaftLeader() {
@@ -552,9 +610,8 @@ public class DMQGuiClient extends JFrame {
         // Remove ANSI escape codes
         cleaned = cleaned.replaceAll("\\u001B\\[[;\\d]*m", "");
         
-        // Remove box drawing characters and decorative lines
+        // Remove box drawing characters
         cleaned = cleaned.replaceAll("[═╔╚╗╝║]", "");
-        cleaned = cleaned.replaceAll("[-=]{3,}", "");
         
         // Remove unsupported Unicode characters that show as "?"
         cleaned = cleaned.replaceAll("[✓✗▶●ℹ⚠]", "");
@@ -566,6 +623,11 @@ public class DMQGuiClient extends JFrame {
         for (String line : lines) {
             String trimmed = line.trim();
             
+            // Skip separator lines (3 or more consecutive - or =)
+            if (trimmed.matches("^[-=]{3,}$")) {
+                continue;
+            }
+            
             // Skip log lines (INFO, DEBUG, WARN, etc.)
             if (trimmed.matches("^\\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\s+\\[.*\\]\\s+(INFO|DEBUG|WARN|ERROR|TRACE).*")) {
                 continue;
@@ -575,6 +637,11 @@ public class DMQGuiClient extends JFrame {
             if (trimmed.startsWith("Trying to load config") ||
                 trimmed.startsWith("Loaded service configuration") ||
                 trimmed.startsWith("Connected to controller")) {
+                continue;
+            }
+            
+            // Skip "Error: null" messages
+            if (trimmed.equals("Error: null")) {
                 continue;
             }
             
@@ -600,6 +667,8 @@ public class DMQGuiClient extends JFrame {
         createTopicBtn.setEnabled(enabled);
         listTopicsBtn.setEnabled(enabled);
         describeTopicBtn.setEnabled(enabled);
+        listGroupsBtn.setEnabled(enabled);
+        describeGroupBtn.setEnabled(enabled);
         getLeaderBtn.setEnabled(enabled);
     }
     

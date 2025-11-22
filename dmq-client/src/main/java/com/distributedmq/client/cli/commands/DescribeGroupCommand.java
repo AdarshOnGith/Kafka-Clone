@@ -43,14 +43,14 @@ public class DescribeGroupCommand implements Command {
         ConsumerGroupResponse group = client.describeConsumerGroup(groupId);
         
         if (group == null) {
-            System.out.println("❌ Consumer group not found: " + groupId);
+            System.out.println("[ERROR] Consumer group not found: " + groupId);
             return;
         }
         
         // Print group overview
-        System.out.println("╔════════════════════════════════════════════════════════════════════════════╗");
-        System.out.println("║                        Consumer Group Details                              ║");
-        System.out.println("╚════════════════════════════════════════════════════════════════════════════╝");
+        System.out.println("================================================================================");
+        System.out.println("                        Consumer Group Details                               ");
+        System.out.println("================================================================================");
         System.out.println();
         System.out.println("Group ID:           " + group.getGroupId());
         System.out.println("Topic:              " + group.getTopic());

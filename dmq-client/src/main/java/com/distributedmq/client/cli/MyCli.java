@@ -29,7 +29,7 @@ public class MyCli {
         try {
             Command cmd = getCommand(command);
             if (cmd == null) {
-                System.err.println("❌ Unknown command: " + command);
+                System.err.println("[ERROR] Unknown command: " + command);
                 System.err.println();
                 printUsage();
                 System.exit(1);
@@ -38,7 +38,8 @@ public class MyCli {
             cmd.execute(commandArgs);
             
         } catch (Exception e) {
-            System.err.println("❌ Error: " + e.getMessage());
+            String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName() + ": " + e.toString();
+            System.err.println("[ERROR] " + errorMsg);
             if (System.getProperty("mycli.verbose") != null) {
                 e.printStackTrace();
             }
@@ -82,9 +83,9 @@ public class MyCli {
     }
     
     private static void printUsage() {
-        System.out.println("╔════════════════════════════════════════════════════════════╗");
-        System.out.println("║  MyCli - DistributedMQ Command Line Interface             ║");
-        System.out.println("╚════════════════════════════════════════════════════════════╝");
+        System.out.println("============================================================");
+        System.out.println("  MyCli - DistributedMQ Command Line Interface");
+        System.out.println("============================================================");
         System.out.println();
         System.out.println("Usage: mycli <command> [options]");
         System.out.println();
