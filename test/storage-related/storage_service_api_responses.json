@@ -1,0 +1,542 @@
+{
+  "test_timestamp": "2025-10-18T00:18:48.314402",
+  "base_url": "http://localhost:8081",
+  "endpoints_tested": [
+    {
+      "name": "health_check",
+      "description": "Health check endpoint",
+      "timestamp": "2025-10-18T00:18:48.329295",
+      "method": "GET",
+      "url": "http://localhost:8081/api/v1/storage/health",
+      "endpoint": "/api/v1/storage/health",
+      "status_code": 200,
+      "response_time_seconds": 0.014,
+      "headers": {
+        "Content-Type": "text/plain;charset=UTF-8",
+        "Content-Length": "33",
+        "Date": "Fri, 17 Oct 2025 18:48:48 GMT",
+        "Keep-Alive": "timeout=60",
+        "Connection": "keep-alive"
+      },
+      "content_type": "text/plain;charset=UTF-8",
+      "content_length": "33",
+      "success": true,
+      "text_body": "Storage Service is up and running",
+      "body_type": "text",
+      "raw_response": {
+        "status_code": 200,
+        "reason": "",
+        "url": "http://localhost:8081/api/v1/storage/health",
+        "encoding": "UTF-8",
+        "elapsed": "0:00:00.009492"
+      }
+    },
+    {
+      "name": "produce_single_message",
+      "description": "Produce single message to partition",
+      "request_body": {
+        "topic": "test-topic",
+        "partition": 0,
+        "producerId": 12345,
+        "producerEpoch": 1,
+        "messages": [
+          {
+            "key": "test-key-1",
+            "value": [
+              72,
+              101,
+              108,
+              108,
+              111,
+              32,
+              87,
+              111,
+              114,
+              108,
+              100
+            ],
+            "timestamp": 1760726928831,
+            "headers": {
+              "content-type": "text/plain"
+            }
+          }
+        ],
+        "requiredAcks": 1,
+        "timeoutMs": 30000
+      },
+      "timestamp": "2025-10-18T00:18:48.909010",
+      "method": "POST",
+      "url": "http://localhost:8081/api/v1/storage/messages",
+      "endpoint": "/api/v1/storage/messages",
+      "status_code": 200,
+      "response_time_seconds": 0.078,
+      "headers": {
+        "Content-Type": "application/json",
+        "Transfer-Encoding": "chunked",
+        "Date": "Fri, 17 Oct 2025 18:48:48 GMT",
+        "Keep-Alive": "timeout=60",
+        "Connection": "keep-alive"
+      },
+      "content_type": "application/json",
+      "content_length": "",
+      "success": true,
+      "json_body": {
+        "topic": "test-topic",
+        "partition": 0,
+        "results": [
+          {
+            "offset": 12,
+            "timestamp": 1760726928831,
+            "errorCode": "NONE",
+            "errorMessage": null
+          }
+        ],
+        "throttleTimeMs": null,
+        "errorMessage": null,
+        "errorCode": "NONE",
+        "success": true
+      },
+      "body_type": "json",
+      "raw_response": {
+        "status_code": 200,
+        "reason": "",
+        "url": "http://localhost:8081/api/v1/storage/messages",
+        "encoding": "utf-8",
+        "elapsed": "0:00:00.073783"
+      }
+    },
+    {
+      "name": "produce_batch_messages",
+      "description": "Produce batch of messages to partition",
+      "request_body": {
+        "topic": "test-topic",
+        "partition": 0,
+        "producerId": 12345,
+        "producerEpoch": 1,
+        "messages": [
+          {
+            "key": "batch-key-1",
+            "value": [
+              66,
+              97,
+              116,
+              99,
+              104,
+              32,
+              77,
+              115,
+              103,
+              32,
+              49
+            ],
+            "timestamp": 1760726928909
+          },
+          {
+            "key": "batch-key-2",
+            "value": [
+              66,
+              97,
+              116,
+              99,
+              104,
+              32,
+              77,
+              115,
+              103,
+              32,
+              50
+            ],
+            "timestamp": 1760726928909
+          }
+        ],
+        "requiredAcks": 1,
+        "timeoutMs": 30000
+      },
+      "timestamp": "2025-10-18T00:18:48.921522",
+      "method": "POST",
+      "url": "http://localhost:8081/api/v1/storage/messages",
+      "endpoint": "/api/v1/storage/messages",
+      "status_code": 200,
+      "response_time_seconds": 0.012,
+      "headers": {
+        "Content-Type": "application/json",
+        "Transfer-Encoding": "chunked",
+        "Date": "Fri, 17 Oct 2025 18:48:48 GMT",
+        "Keep-Alive": "timeout=60",
+        "Connection": "keep-alive"
+      },
+      "content_type": "application/json",
+      "content_length": "",
+      "success": true,
+      "json_body": {
+        "topic": "test-topic",
+        "partition": 0,
+        "results": [
+          {
+            "offset": 13,
+            "timestamp": 1760726928909,
+            "errorCode": "NONE",
+            "errorMessage": null
+          },
+          {
+            "offset": 14,
+            "timestamp": 1760726928909,
+            "errorCode": "NONE",
+            "errorMessage": null
+          }
+        ],
+        "throttleTimeMs": null,
+        "errorMessage": null,
+        "errorCode": "NONE",
+        "success": true
+      },
+      "body_type": "json",
+      "raw_response": {
+        "status_code": 200,
+        "reason": "",
+        "url": "http://localhost:8081/api/v1/storage/messages",
+        "encoding": "utf-8",
+        "elapsed": "0:00:00.010252"
+      }
+    },
+    {
+      "name": "consume_from_beginning",
+      "description": "Consume messages from offset 0",
+      "request_body": {
+        "topic": "test-topic",
+        "partition": 0,
+        "offset": 0,
+        "maxMessages": 10
+      },
+      "timestamp": "2025-10-18T00:18:49.963958",
+      "method": "POST",
+      "url": "http://localhost:8081/api/v1/storage/consume",
+      "endpoint": "/api/v1/storage/consume",
+      "status_code": 200,
+      "response_time_seconds": 0.542,
+      "headers": {
+        "Content-Type": "application/json",
+        "Transfer-Encoding": "chunked",
+        "Date": "Fri, 17 Oct 2025 18:48:49 GMT",
+        "Keep-Alive": "timeout=60",
+        "Connection": "keep-alive"
+      },
+      "content_type": "application/json",
+      "content_length": "",
+      "success": true,
+      "json_body": {
+        "messages": [],
+        "highWaterMark": 0,
+        "errorMessage": null,
+        "success": true
+      },
+      "body_type": "json",
+      "raw_response": {
+        "status_code": 200,
+        "reason": "",
+        "url": "http://localhost:8081/api/v1/storage/consume",
+        "encoding": "utf-8",
+        "elapsed": "0:00:00.540089"
+      }
+    },
+    {
+      "name": "consume_from_offset",
+      "description": "Consume messages from specific offset",
+      "request_body": {
+        "topic": "test-topic",
+        "partition": 0,
+        "offset": 1,
+        "maxMessages": 5
+      },
+      "timestamp": "2025-10-18T00:18:50.490236",
+      "method": "POST",
+      "url": "http://localhost:8081/api/v1/storage/consume",
+      "endpoint": "/api/v1/storage/consume",
+      "status_code": 200,
+      "response_time_seconds": 0.526,
+      "headers": {
+        "Content-Type": "application/json",
+        "Transfer-Encoding": "chunked",
+        "Date": "Fri, 17 Oct 2025 18:48:49 GMT",
+        "Keep-Alive": "timeout=60",
+        "Connection": "keep-alive"
+      },
+      "content_type": "application/json",
+      "content_length": "",
+      "success": true,
+      "json_body": {
+        "messages": [],
+        "highWaterMark": 0,
+        "errorMessage": null,
+        "success": true
+      },
+      "body_type": "json",
+      "raw_response": {
+        "status_code": 200,
+        "reason": "",
+        "url": "http://localhost:8081/api/v1/storage/consume",
+        "encoding": "utf-8",
+        "elapsed": "0:00:00.524159"
+      }
+    },
+    {
+      "name": "get_high_water_mark",
+      "description": "Get high water mark for partition",
+      "timestamp": "2025-10-18T00:18:51.011230",
+      "method": "GET",
+      "url": "http://localhost:8081/api/v1/storage/partitions/test-topic/0/high-water-mark",
+      "endpoint": "/api/v1/storage/partitions/test-topic/0/high-water-mark",
+      "status_code": 200,
+      "response_time_seconds": 0.019,
+      "headers": {
+        "Content-Type": "application/json",
+        "Transfer-Encoding": "chunked",
+        "Date": "Fri, 17 Oct 2025 18:48:51 GMT",
+        "Keep-Alive": "timeout=60",
+        "Connection": "keep-alive"
+      },
+      "content_type": "application/json",
+      "content_length": "",
+      "success": true,
+      "json_body": 0,
+      "body_type": "json",
+      "raw_response": {
+        "status_code": 200,
+        "reason": "",
+        "url": "http://localhost:8081/api/v1/storage/partitions/test-topic/0/high-water-mark",
+        "encoding": "utf-8",
+        "elapsed": "0:00:00.017174"
+      }
+    },
+    {
+      "name": "replication_request",
+      "description": "Process replication request from leader",
+      "request_body": {
+        "leaderId": 1,
+        "followerId": 2,
+        "topic": "test-topic",
+        "partition": 0,
+        "leaderEpoch": 1,
+        "messages": [
+          {
+            "offset": 0,
+            "key": "replication-key",
+            "value": [
+              82,
+              101,
+              112,
+              108,
+              105,
+              99,
+              97,
+              116,
+              105,
+              111,
+              110
+            ],
+            "timestamp": 1760726931512
+          }
+        ],
+        "highWaterMark": 1
+      },
+      "timestamp": "2025-10-18T00:18:51.531313",
+      "method": "POST",
+      "url": "http://localhost:8081/api/v1/storage/replicate",
+      "endpoint": "/api/v1/storage/replicate",
+      "status_code": 200,
+      "response_time_seconds": 0.019,
+      "headers": {
+        "Content-Type": "application/json",
+        "Transfer-Encoding": "chunked",
+        "Date": "Fri, 17 Oct 2025 18:48:51 GMT",
+        "Keep-Alive": "timeout=60",
+        "Connection": "keep-alive"
+      },
+      "content_type": "application/json",
+      "content_length": "",
+      "success": true,
+      "json_body": {
+        "topic": "test-topic",
+        "partition": 0,
+        "followerId": 1,
+        "baseOffset": null,
+        "messageCount": null,
+        "success": false,
+        "errorCode": "NOT_FOLLOWER_FOR_PARTITION",
+        "errorMessage": "This broker is not a follower for partition test-topic-0",
+        "replicationTimeMs": null
+      },
+      "body_type": "json",
+      "raw_response": {
+        "status_code": 200,
+        "reason": "",
+        "url": "http://localhost:8081/api/v1/storage/replicate",
+        "encoding": "utf-8",
+        "elapsed": "0:00:00.017538"
+      }
+    },
+    {
+      "name": "metadata_update",
+      "description": "Update metadata from metadata service",
+      "request_body": {
+        "brokers": [
+          {
+            "id": 1,
+            "host": "localhost",
+            "port": 8081,
+            "rack": "rack1"
+          },
+          {
+            "id": 2,
+            "host": "localhost",
+            "port": 8082,
+            "rack": "rack1"
+          }
+        ],
+        "partitions": [
+          {
+            "topic": "test-topic",
+            "partition": 0,
+            "leaderId": 1,
+            "followerIds": [
+              2
+            ],
+            "isrIds": [
+              1,
+              2
+            ]
+          }
+        ],
+        "timestamp": 1760726932031
+      },
+      "timestamp": "2025-10-18T00:18:52.046236",
+      "method": "POST",
+      "url": "http://localhost:8081/api/v1/storage/metadata",
+      "endpoint": "/api/v1/storage/metadata",
+      "status_code": 200,
+      "response_time_seconds": 0.014,
+      "headers": {
+        "Content-Type": "application/json",
+        "Transfer-Encoding": "chunked",
+        "Date": "Fri, 17 Oct 2025 18:48:52 GMT",
+        "Keep-Alive": "timeout=60",
+        "Connection": "keep-alive"
+      },
+      "content_type": "application/json",
+      "content_length": "",
+      "success": true,
+      "json_body": {
+        "success": false,
+        "errorCode": "PROCESSING_ERROR",
+        "errorMessage": "Failed to update metadata: null",
+        "processedTimestamp": 1760726932043,
+        "brokerId": 1
+      },
+      "body_type": "json",
+      "raw_response": {
+        "status_code": 200,
+        "reason": "",
+        "url": "http://localhost:8081/api/v1/storage/metadata",
+        "encoding": "utf-8",
+        "elapsed": "0:00:00.012364"
+      }
+    },
+    {
+      "name": "invalid_produce_request",
+      "description": "Test invalid produce request (empty topic)",
+      "request_body": {
+        "topic": "",
+        "partition": 0,
+        "messages": [
+          {
+            "value": [
+              72,
+              101,
+              108,
+              108,
+              111
+            ]
+          }
+        ]
+      },
+      "timestamp": "2025-10-18T00:18:52.555969",
+      "method": "POST",
+      "url": "http://localhost:8081/api/v1/storage/messages",
+      "endpoint": "/api/v1/storage/messages",
+      "status_code": 200,
+      "response_time_seconds": 0.009,
+      "headers": {
+        "Content-Type": "application/json",
+        "Transfer-Encoding": "chunked",
+        "Date": "Fri, 17 Oct 2025 18:48:52 GMT",
+        "Keep-Alive": "timeout=60",
+        "Connection": "keep-alive"
+      },
+      "content_type": "application/json",
+      "content_length": "",
+      "success": true,
+      "json_body": {
+        "topic": "",
+        "partition": 0,
+        "results": null,
+        "throttleTimeMs": null,
+        "errorMessage": "Invalid request",
+        "errorCode": "INVALID_REQUEST",
+        "success": false
+      },
+      "body_type": "json",
+      "raw_response": {
+        "status_code": 200,
+        "reason": "",
+        "url": "http://localhost:8081/api/v1/storage/messages",
+        "encoding": "utf-8",
+        "elapsed": "0:00:00.006867"
+      }
+    },
+    {
+      "name": "nonexistent_endpoint",
+      "description": "Test request to non-existent endpoint",
+      "timestamp": "2025-10-18T00:18:52.586604",
+      "method": "GET",
+      "url": "http://localhost:8081/api/v1/storage/nonexistent",
+      "endpoint": "/api/v1/storage/nonexistent",
+      "status_code": 404,
+      "response_time_seconds": 0.031,
+      "headers": {
+        "Vary": "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+        "Content-Type": "application/json",
+        "Transfer-Encoding": "chunked",
+        "Date": "Fri, 17 Oct 2025 18:48:52 GMT",
+        "Keep-Alive": "timeout=60",
+        "Connection": "keep-alive"
+      },
+      "content_type": "application/json",
+      "content_length": "",
+      "success": false,
+      "json_body": {
+        "timestamp": "2025-10-17T18:48:52.574+00:00",
+        "status": 404,
+        "error": "Not Found",
+        "path": "/api/v1/storage/nonexistent"
+      },
+      "body_type": "json",
+      "raw_response": {
+        "status_code": 404,
+        "reason": "",
+        "url": "http://localhost:8081/api/v1/storage/nonexistent",
+        "encoding": "utf-8",
+        "elapsed": "0:00:00.029628"
+      }
+    }
+  ],
+  "summary": {
+    "total_endpoints_tested": 10,
+    "successful_tests": 9,
+    "failed_tests": 1,
+    "success_rate": 90.0,
+    "endpoints_by_status": {
+      "200": 9,
+      "404": 1
+    }
+  }
+}

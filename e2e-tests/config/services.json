@@ -1,0 +1,16 @@
+﻿{
+  "metadata-services": [
+    {
+      "id": 1,
+      "host": "localhost",
+      "port": 9091
+    }
+  ],
+  "storage-services": [
+    {
+      "id": 1,
+      "host": "localhost",
+      "port": 8081
+    }
+  ]
+}

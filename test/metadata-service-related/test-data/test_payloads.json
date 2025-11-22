@@ -1,0 +1,113 @@
+{
+  "brokers": {
+    "valid": [
+      {
+        "id": 1,
+        "host": "localhost",
+        "port": 8082,
+        "rack": "rack1"
+      },
+      {
+        "id": 2,
+        "host": "localhost",
+        "port": 8083,
+        "rack": "rack1"
+      },
+      {
+        "id": 3,
+        "host": "localhost",
+        "port": 8084,
+        "rack": "rack2"
+      }
+    ],
+    "invalid": [
+      {
+        "id": 1,
+        "host": "localhost",
+        "port": -1,
+        "rack": "rack1"
+      },
+      {
+        "host": "localhost",
+        "port": 8085
+      }
+    ]
+  },
+  "topics": {
+    "valid": [
+      {
+        "topicName": "test-topic-1",
+        "partitionCount": 3,
+        "replicationFactor": 1
+      },
+      {
+        "topicName": "test-topic-2",
+        "partitionCount": 2,
+        "replicationFactor": 1
+      }
+    ],
+    "invalid": [
+      {
+        "topicName": "",
+        "partitionCount": 1,
+        "replicationFactor": 1
+      },
+      {
+        "topicName": "valid-name",
+        "partitionCount": 0,
+        "replicationFactor": 1
+      }
+    ]
+  },
+  "heartbeats": {
+    "valid": [
+      {
+        "serviceId": "storage-1",
+        "metadataVersion": 1697328000000,
+        "partitionCount": 5,
+        "isAlive": true
+      },
+      {
+        "serviceId": "storage-1",
+        "metadataVersion": 1697327000000,
+        "partitionCount": 5,
+        "isAlive": false
+      }
+    ],
+    "invalid": [
+      {
+        "metadataVersion": 1697328000000,
+        "partitionCount": 5,
+        "isAlive": true
+      },
+      {
+        "serviceId": "storage-1",
+        "metadataVersion": -1,
+        "partitionCount": 5,
+        "isAlive": true
+      }
+    ]
+  },
+  "bulkOperations": {
+    "topics": [
+      {
+        "topicName": "bulk-topic-1",
+        "partitionCount": 1,
+        "replicationFactor": 1
+      },
+      {
+        "topicName": "bulk-topic-2",
+        "partitionCount": 1,
+        "replicationFactor": 1
+      }
+    ],
+    "brokers": [
+      {
+        "id": 10,
+        "host": "localhost",
+        "port": 8090,
+        "rack": "rack1"
+      }
+    ]
+  }
+}
