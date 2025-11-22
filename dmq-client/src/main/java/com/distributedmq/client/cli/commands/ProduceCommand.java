@@ -102,13 +102,13 @@ public class ProduceCommand implements Command {
         
         if (response.isSuccess() && response.getResults() != null && !response.getResults().isEmpty()) {
             ProduceResponse.ProduceResult result = response.getResults().get(0);
-            System.out.println("✓ Message sent successfully!");
+            System.out.println("[OK] Message sent successfully!");
             System.out.println("  Topic: " + response.getTopic());
             System.out.println("  Partition: " + response.getPartition());
             System.out.println("  Offset: " + result.getOffset());
             System.out.println("  Timestamp: " + result.getTimestamp());
         } else {
-            System.err.println("✗ Failed to send message");
+            System.err.println("[ERROR] Failed to send message");
             System.err.println("  Error: " + response.getErrorMessage());
             System.exit(1);
         }
@@ -130,7 +130,7 @@ public class ProduceCommand implements Command {
         List<SimpleProducer.MessageEntry> messages = readMessagesFromFile(batchFile);
         
         if (messages.isEmpty()) {
-            System.err.println("✗ No messages found in file");
+            System.err.println("[ERROR] No messages found in file");
             System.exit(1);
             return;
         }
@@ -143,7 +143,7 @@ public class ProduceCommand implements Command {
         ProduceResponse response = producer.sendBatch(topic, messages, partition, acks);
         
         if (response.isSuccess() && response.getResults() != null) {
-            System.out.println("✓ Batch sent successfully!");
+            System.out.println("[OK] Batch sent successfully!");
             System.out.println("  Topic: " + response.getTopic());
             System.out.println("  Partition: " + response.getPartition());
             System.out.println("  Messages: " + response.getResults().size());
@@ -158,7 +158,7 @@ public class ProduceCommand implements Command {
                 System.out.println("  First Timestamp: " + first.getTimestamp());
             }
         } else {
-            System.err.println("✗ Failed to send batch");
+            System.err.println("[ERROR] Failed to send batch");
             System.err.println("  Error: " + response.getErrorMessage());
             System.exit(1);
         }

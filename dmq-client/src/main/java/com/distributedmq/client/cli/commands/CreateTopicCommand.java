@@ -73,7 +73,7 @@ public class CreateTopicCommand implements Command {
         
         client.createTopic(request);
         
-        System.out.println("✓ Topic '" + topicName + "' created successfully!");
+        System.out.println("[OK] Topic '" + topicName + "' created successfully!");
     }
     
     @Override

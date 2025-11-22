@@ -50,6 +50,12 @@ public class MyCli {
         switch (name.toLowerCase()) {
             case "create-topic":
                 return new CreateTopicCommand();
+            case "list-topics":
+                return new ListTopicsCommand();
+            case "describe-topic":
+                return new DescribeTopicCommand();
+            case "get-leader":
+                return new GetLeaderCommand();
             case "produce":
                 return new ProduceCommand();
             case "consume":
@@ -84,6 +90,11 @@ public class MyCli {
         System.out.println();
         System.out.println("Topic Management:");
         System.out.println("  create-topic       Create a new topic");
+        System.out.println("  list-topics        List all topics");
+        System.out.println("  describe-topic     Describe a specific topic");
+        System.out.println();
+        System.out.println("Cluster Management:");
+        System.out.println("  get-leader         Get Raft leader information");
         System.out.println();
         System.out.println("Producer Commands:");
         System.out.println("  produce            Produce messages to a topic");

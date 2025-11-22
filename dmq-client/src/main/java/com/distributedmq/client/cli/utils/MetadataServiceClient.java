@@ -138,6 +138,27 @@ public class MetadataServiceClient {
     }
     
     /**
+     * List all topics
+     */
+    public List<String> listTopics() throws Exception {
+        String url = controllerUrl + "/api/v1/metadata/topics";
+        
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(10))
+                .GET()
+                .build();
+        
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("Failed to list topics: HTTP " + response.statusCode());
+        }
+        
+        return objectMapper.readValue(response.body(), new TypeReference<List<String>>() {});
+    }
+    
+    /**
      * List all consumer groups
      */
     public List<ConsumerGroupResponse> listConsumerGroups() throws Exception {

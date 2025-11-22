@@ -126,7 +126,7 @@ public class ConsumeCommand implements Command {
             } while (continuous);
             
             System.out.println();
-            System.out.println("✓ Consumed " + totalConsumed + " messages");
+            System.out.println("[OK] Consumed " + totalConsumed + " messages");
             System.out.println("  Next offset: " + currentOffset);
             
         } finally {
