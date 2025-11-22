@@ -7,6 +7,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
 $cliJar = "dmq-client\target\mycli.jar"
+$cliJarAbsolute = Resolve-Path $cliJar
 $testsPassed = 0
 $testsFailed = 0
 
@@ -127,14 +128,41 @@ if ($LASTEXITCODE -eq 0) {
     $testsFailed++
 }
 
-Write-Host "[Test 5] Describe consumer group" -ForegroundColor Yellow
-& java -jar $cliJar describe-group --group-id $groupId 2>&1 | Out-Null
-# This may fail if group doesn't exist yet, which is fine
-Write-Host "  [SKIP] Group may not exist" -ForegroundColor Yellow
+Write-Host "[Test 5] Consume with consumer group (group-based consumption)" -ForegroundColor Yellow
+Write-Host "  Starting consumer group consumption..." -ForegroundColor Gray
 
-Write-Host ""
-Write-Host "Note: consume-group command not yet implemented in CLI" -ForegroundColor Gray
-Write-Host "Consumer group functionality exists in DMQConsumer class" -ForegroundColor Gray
+# Run consume-group in background job for 10 seconds
+$groupAppId = "test-consumer-group-$timestamp"
+$metadataUrl = "http://localhost:9092"  # Use leader node
+$consumeGroupJob = Start-Job -ScriptBlock {
+    param($jar, $topic, $appId, $metaUrl)
+    & java -jar $jar consume-group --topic $topic --app-id $appId --max-messages 20 --metadata-url $metaUrl 2>&1
+} -ArgumentList $cliJarAbsolute, $testTopic, $groupAppId, $metadataUrl
+
+# Wait for job to complete or timeout
+$jobTimeout = 15
+$jobResult = Wait-Job -Job $consumeGroupJob -Timeout $jobTimeout
+$consumeGroupOutput = Receive-Job -Job $consumeGroupJob
+
+Remove-Job -Job $consumeGroupJob -Force
+
+if ($consumeGroupOutput -match "Successfully joined consumer group|Consumed \d+ messages") {
+    Write-Host "  [PASS] Consumer group consumption worked" -ForegroundColor Green
+    $testsPassed++
+} else {
+    Write-Host "  [FAIL] Consumer group consumption failed" -ForegroundColor Red
+    Write-Host "  Output: $consumeGroupOutput" -ForegroundColor Gray
+    $testsFailed++
+}
+
+Write-Host "[Test 6] Describe consumer group" -ForegroundColor Yellow
+& java -jar $cliJar describe-group --group $groupAppId 2>&1 | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "  [PASS]" -ForegroundColor Green
+    $testsPassed++
+} else {
+    Write-Host "  [SKIP] Group may not exist or already cleaned up" -ForegroundColor Yellow
+}
 
 Write-Host ""
 
@@ -165,7 +193,7 @@ for ($p = 0; $p -lt 3; $p++) {
 Remove-Item -Path $perfBatchFile -ErrorAction SilentlyContinue
 Write-Host "[PASS] Additional messages produced using batch mode" -ForegroundColor Green
 
-Write-Host "[Test 6] Consume 50 messages (performance test)" -ForegroundColor Yellow
+Write-Host "[Test 7] Consume 50 messages (performance test)" -ForegroundColor Yellow
 $startTime = Get-Date
 
 & java -jar $cliJar consume --topic $testTopic --partition 0 --offset 0 --max-messages 50 2>&1 | Out-Null

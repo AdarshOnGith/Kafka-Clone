@@ -59,10 +59,15 @@ public class DMQGuiClient extends JFrame {
     
     // Consumer Tab
     private JTextField consumerTopic;
+    private JTextField consumerGroupId;
     private JTextField consumerPartition;
     private JTextField consumerOffset;
     private JTextField consumerMaxMessages;
     private JButton consumeBtn;
+    private JButton consumeGroupBtn;
+    private JButton consumeGroupContinuousBtn;
+    private JButton stopConsumeBtn;
+    private volatile Process currentConsumeProcess = null;
     
     // Topic Management Tab
     private JTextField topicName;
@@ -74,6 +79,7 @@ public class DMQGuiClient extends JFrame {
     
     // Consumer Groups Tab
     private JTextField groupId;
+    private JTextField appId;
     private JButton listGroupsBtn;
     private JButton describeGroupBtn;
     
@@ -96,7 +102,7 @@ public class DMQGuiClient extends JFrame {
         JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         topPanel.setBorder(new EmptyBorder(10, 10, 5, 10));
         topPanel.add(new JLabel("Metadata Service URL:"));
-        metadataServiceUrl = new JTextField("http://localhost:9091", 30);
+        metadataServiceUrl = new JTextField("http://localhost:9092", 30);
         topPanel.add(metadataServiceUrl);
         
         // Pretty mode toggle
@@ -222,22 +228,30 @@ public class DMQGuiClient extends JFrame {
         consumerTopic = new JTextField(20);
         formPanel.add(consumerTopic, gbc);
         
-        // Partition
+        // Group ID / App ID
         gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0;
+        formPanel.add(new JLabel("Group ID / App ID (optional):"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        consumerGroupId = new JTextField(20);
+        consumerGroupId.setToolTipText("For group-based consumption. Leave empty for simple consume.");
+        formPanel.add(consumerGroupId, gbc);
+        
+        // Partition
+        gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0.0;
         formPanel.add(new JLabel("Partition:"), gbc);
         gbc.gridx = 1; gbc.weightx = 1.0;
         consumerPartition = new JTextField("0", 20);
         formPanel.add(consumerPartition, gbc);
         
         // Offset
-        gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0.0;
+        gbc.gridx = 0; gbc.gridy = 3; gbc.weightx = 0.0;
         formPanel.add(new JLabel("Start Offset:"), gbc);
         gbc.gridx = 1; gbc.weightx = 1.0;
         consumerOffset = new JTextField("0", 20);
         formPanel.add(consumerOffset, gbc);
         
         // Max Messages
-        gbc.gridx = 0; gbc.gridy = 3; gbc.weightx = 0.0;
+        gbc.gridx = 0; gbc.gridy = 4; gbc.weightx = 0.0;
         formPanel.add(new JLabel("Max Messages:"), gbc);
         gbc.gridx = 1; gbc.weightx = 1.0;
         consumerMaxMessages = new JTextField("10", 20);
@@ -246,10 +260,28 @@ public class DMQGuiClient extends JFrame {
         panel.add(formPanel, BorderLayout.CENTER);
         
         // Button Panel
-        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        consumeBtn = new JButton("Consume Messages");
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        
+        consumeBtn = new JButton("Consume (Partition)");
+        consumeBtn.setToolTipText("Direct partition consumption");
         consumeBtn.addActionListener(e -> consumeMessages());
         buttonPanel.add(consumeBtn);
+        
+        consumeGroupBtn = new JButton("Consume (Group - Once)");
+        consumeGroupBtn.setToolTipText("Consumer group - single poll");
+        consumeGroupBtn.addActionListener(e -> consumeWithGroup());
+        buttonPanel.add(consumeGroupBtn);
+        
+        consumeGroupContinuousBtn = new JButton("Consume (Group - Continuous)");
+        consumeGroupContinuousBtn.setToolTipText("Consumer group - continuous polling with heartbeat");
+        consumeGroupContinuousBtn.addActionListener(e -> consumeWithGroupContinuous());
+        buttonPanel.add(consumeGroupContinuousBtn);
+        
+        stopConsumeBtn = new JButton("Stop");
+        stopConsumeBtn.setEnabled(false);
+        stopConsumeBtn.setForeground(Color.RED);
+        stopConsumeBtn.addActionListener(e -> stopContinuousConsume());
+        buttonPanel.add(stopConsumeBtn);
         
         panel.add(buttonPanel, BorderLayout.SOUTH);
         
@@ -325,6 +357,14 @@ public class DMQGuiClient extends JFrame {
         gbc.gridx = 1; gbc.weightx = 1.0;
         groupId = new JTextField(20);
         formPanel.add(groupId, gbc);
+        
+        // App ID
+        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0;
+        formPanel.add(new JLabel("App ID (optional):"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        appId = new JTextField(20);
+        appId.setToolTipText("Application ID for consumer group operations");
+        formPanel.add(appId, gbc);
         
         panel.add(formPanel, BorderLayout.CENTER);
         
@@ -424,6 +464,65 @@ public class DMQGuiClient extends JFrame {
         cmd.append(" --max-messages ").append(maxMessages.isEmpty() ? "10" : maxMessages);
         
         executeCliCommand(cmd.toString());
+    }
+    
+    private void consumeWithGroup() {
+        String topic = consumerTopic.getText().trim();
+        String groupId = consumerGroupId.getText().trim();
+        String maxMessages = consumerMaxMessages.getText().trim();
+        
+        if (topic.isEmpty()) {
+            showError("Topic is required!");
+            return;
+        }
+        
+        if (groupId.isEmpty()) {
+            showError("Group ID / App ID is required for group-based consumption!");
+            return;
+        }
+        
+        StringBuilder cmd = new StringBuilder();
+        cmd.append("consume-group --topic ").append(topic);
+        cmd.append(" --app-id ").append(groupId);
+        cmd.append(" --max-messages ").append(maxMessages.isEmpty() ? "100" : maxMessages);
+        cmd.append(" --metadata-url ").append(metadataServiceUrl.getText().trim());
+        
+        executeCliCommand(cmd.toString());
+    }
+    
+    private void consumeWithGroupContinuous() {
+        String topic = consumerTopic.getText().trim();
+        String groupId = consumerGroupId.getText().trim();
+        String maxMessages = consumerMaxMessages.getText().trim();
+        
+        if (topic.isEmpty()) {
+            showError("Topic is required!");
+            return;
+        }
+        
+        if (groupId.isEmpty()) {
+            showError("Group ID / App ID is required for group-based consumption!");
+            return;
+        }
+        
+        StringBuilder cmd = new StringBuilder();
+        cmd.append("consume-group --topic ").append(topic);
+        cmd.append(" --app-id ").append(groupId);
+        cmd.append(" --max-messages ").append(maxMessages.isEmpty() ? "100" : maxMessages);
+        cmd.append(" --metadata-url ").append(metadataServiceUrl.getText().trim());
+        cmd.append(" --continuous");  // Enable continuous mode
+        
+        executeCliCommandBackground(cmd.toString());
+    }
+    
+    private void stopContinuousConsume() {
+        if (currentConsumeProcess != null && currentConsumeProcess.isAlive()) {
+            currentConsumeProcess.destroy();
+            appendOutput("\n[STOPPED] Consumer process terminated\n");
+            currentConsumeProcess = null;
+            setConsumeButtonsEnabled(true);
+            stopConsumeBtn.setEnabled(false);
+        }
     }
     
     private void createTopic() {
@@ -542,6 +641,79 @@ public class DMQGuiClient extends JFrame {
                 SwingUtilities.invokeLater(() -> setButtonsEnabled(true));
             }
         });
+    }
+    
+    private void executeCliCommandBackground(String command) {
+        displayCommandOutput("CLI Command (Continuous): " + command, "");
+        appendOutput("[INFO] Starting continuous consumer... Press 'Stop' to terminate.\n\n");
+        
+        // Disable consume buttons, enable stop button
+        setConsumeButtonsEnabled(false);
+        stopConsumeBtn.setEnabled(true);
+        
+        // Execute in background thread with streaming output
+        CompletableFuture.runAsync(() -> {
+            try {
+                ProcessBuilder pb = new ProcessBuilder("java", "-jar", CLI_JAR);
+                
+                // Add command arguments properly
+                String[] args = parseCommandLine(command);
+                for (String arg : args) {
+                    pb.command().add(arg);
+                }
+                
+                pb.redirectErrorStream(true);
+                currentConsumeProcess = pb.start();
+                
+                // Read output in real-time
+                BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(currentConsumeProcess.getInputStream())
+                );
+                
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    final String outputLine = line;
+                    SwingUtilities.invokeLater(() -> {
+                        if (prettyModeCheckbox.isSelected()) {
+                            String cleaned = cleanOutput(outputLine);
+                            if (!cleaned.trim().isEmpty()) {
+                                appendOutput(cleaned + "\n");
+                            }
+                        } else {
+                            appendOutput(outputLine + "\n");
+                        }
+                    });
+                }
+                
+                int exitCode = currentConsumeProcess.waitFor();
+                
+                final int finalExitCode = exitCode;
+                SwingUtilities.invokeLater(() -> {
+                    if (finalExitCode == 0) {
+                        appendOutput("\n[INFO] Consumer stopped gracefully\n");
+                    } else {
+                        appendOutput("\n[INFO] Consumer stopped with exit code: " + finalExitCode + "\n");
+                    }
+                    currentConsumeProcess = null;
+                    setConsumeButtonsEnabled(true);
+                    stopConsumeBtn.setEnabled(false);
+                });
+                
+            } catch (Exception e) {
+                final String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                SwingUtilities.invokeLater(() -> {
+                    appendOutput("[ERROR] " + errorMsg + "\n");
+                    currentConsumeProcess = null;
+                    setConsumeButtonsEnabled(true);
+                    stopConsumeBtn.setEnabled(false);
+                });
+            }
+        });
+    }
+    
+    private void appendOutput(String text) {
+        outputArea.append(text);
+        outputArea.setCaretPosition(outputArea.getDocument().getLength());
     }
     
     private String[] parseCommandLine(String command) {
@@ -664,12 +836,20 @@ public class DMQGuiClient extends JFrame {
         produceSingleBtn.setEnabled(enabled);
         produceBatchBtn.setEnabled(enabled);
         consumeBtn.setEnabled(enabled);
+        consumeGroupBtn.setEnabled(enabled);
+        consumeGroupContinuousBtn.setEnabled(enabled);
         createTopicBtn.setEnabled(enabled);
         listTopicsBtn.setEnabled(enabled);
         describeTopicBtn.setEnabled(enabled);
         listGroupsBtn.setEnabled(enabled);
         describeGroupBtn.setEnabled(enabled);
         getLeaderBtn.setEnabled(enabled);
+    }
+    
+    private void setConsumeButtonsEnabled(boolean enabled) {
+        consumeBtn.setEnabled(enabled);
+        consumeGroupBtn.setEnabled(enabled);
+        consumeGroupContinuousBtn.setEnabled(enabled);
     }
     
     private void showError(String message) {

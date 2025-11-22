@@ -61,6 +61,8 @@ public class MyCli {
                 return new ProduceCommand();
             case "consume":
                 return new ConsumeCommand();
+            case "consume-group":
+                return new ConsumeGroupCommand();
             case "list-groups":
                 return new ListGroupsCommand();
             case "describe-group":
@@ -101,7 +103,8 @@ public class MyCli {
         System.out.println("  produce            Produce messages to a topic");
         System.out.println();
         System.out.println("Consumer Commands:");
-        System.out.println("  consume            Consume messages from a topic");
+        System.out.println("  consume            Consume messages from a topic partition");
+        System.out.println("  consume-group      Consume with consumer groups (auto-assignment)");
         System.out.println("  list-groups        List all consumer groups");
         System.out.println("  describe-group     Describe a consumer group");
         System.out.println();
@@ -118,8 +121,11 @@ public class MyCli {
         System.out.println("  # Produce a message");
         System.out.println("  mycli produce --topic orders --key order-123 --value \"Order data\"");
         System.out.println();
-        System.out.println("  # Consume messages");
+        System.out.println("  # Consume messages from specific partition");
         System.out.println("  mycli consume --topic orders --partition 0 --from-beginning");
+        System.out.println();
+        System.out.println("  # Consume with consumer groups (auto partition assignment)");
+        System.out.println("  mycli consume-group --topic orders --app-id order-processor");
         System.out.println();
         System.out.println("  # List consumer groups");
         System.out.println("  mycli list-groups");

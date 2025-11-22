@@ -143,7 +143,7 @@ public class DMQConsumer implements Consumer {
                 .appId(config.getGroupId())
                 .build();
         
-        String url = metadataUrl + "/api/v1/consumer-groups/find-or-create";
+        String url = metadataUrl + "/api/v1/metadata/consumer-groups/find-or-create";
         
         HttpRequest httpRequest = HttpRequest.newBuilder()
                 .uri(URI.create(url))
