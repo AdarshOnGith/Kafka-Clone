@@ -332,6 +332,52 @@ public class MetadataStateMachine {
                             cmd.getTopicName(), cmd.getPartitionId());
                 }
             }
+            // Try RegisterConsumerGroupCommand (has groupId, topic, appId, groupLeaderBrokerId)
+            else if (map.containsKey("groupId") && map.containsKey("topic") && 
+                     map.containsKey("appId") && map.containsKey("groupLeaderBrokerId")) {
+                log.info("Applying Map-based RegisterConsumerGroupCommand: {}", map);
+                
+                RegisterConsumerGroupCommand cmd = RegisterConsumerGroupCommand.builder()
+                        .groupId((String) map.get("groupId"))
+                        .topic((String) map.get("topic"))
+                        .appId((String) map.get("appId"))
+                        .groupLeaderBrokerId(((Number) map.get("groupLeaderBrokerId")).intValue())
+                        .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
+                        .build();
+                applyRegisterConsumerGroup(cmd);
+                log.info("Successfully applied Map-based RegisterConsumerGroupCommand for group {}", cmd.getGroupId());
+                stateChanged = true;
+            }
+            // Try UpdateConsumerGroupLeaderCommand (has groupId, newGroupLeaderBrokerId - NOT topic/appId)
+            else if (map.containsKey("groupId") && map.containsKey("newGroupLeaderBrokerId") && 
+                     !map.containsKey("topic") && !map.containsKey("appId")) {
+                log.info("Applying Map-based UpdateConsumerGroupLeaderCommand: {}", map);
+                
+                UpdateConsumerGroupLeaderCommand cmd = UpdateConsumerGroupLeaderCommand.builder()
+                        .groupId((String) map.get("groupId"))
+                        .newGroupLeaderBrokerId(((Number) map.get("newGroupLeaderBrokerId")).intValue())
+                        .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
+                        .build();
+                stateChanged = applyUpdateConsumerGroupLeader(cmd);
+                if (stateChanged) {
+                    log.info("Successfully applied Map-based UpdateConsumerGroupLeaderCommand for group {}", cmd.getGroupId());
+                }
+            }
+            // Try DeleteConsumerGroupCommand (has ONLY groupId and timestamp, nothing else)
+            else if (map.containsKey("groupId") && map.size() <= 2 && 
+                     !map.containsKey("topic") && !map.containsKey("appId") && 
+                     !map.containsKey("newGroupLeaderBrokerId")) {
+                log.info("Applying Map-based DeleteConsumerGroupCommand: {}", map);
+                
+                DeleteConsumerGroupCommand cmd = DeleteConsumerGroupCommand.builder()
+                        .groupId((String) map.get("groupId"))
+                        .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
+                        .build();
+                stateChanged = applyDeleteConsumerGroup(cmd);
+                if (stateChanged) {
+                    log.info("Successfully applied Map-based DeleteConsumerGroupCommand for group {}", cmd.getGroupId());
+                }
+            }
             else {
                 log.error("Unknown Map command structure: {}", map);
             }
