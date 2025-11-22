@@ -40,14 +40,29 @@ public class SimpleProducer {
     }
     
     /**
-     * Send a message to a topic
+     * Send a single message to a topic
      */
     public ProduceResponse send(String topic, String key, String value, Integer partition, int acks) throws Exception {
+        // Create single message batch
+        List<MessageEntry> messages = new java.util.ArrayList<>();
+        messages.add(new MessageEntry(key, value));
+        return sendBatch(topic, messages, partition, acks);
+    }
+    
+    /**
+     * Send a batch of messages to a topic
+     */
+    public ProduceResponse sendBatch(String topic, List<MessageEntry> messages, Integer partition, int acks) throws Exception {
+        if (messages == null || messages.isEmpty()) {
+            throw new IllegalArgumentException("Message batch cannot be empty");
+        }
+        
         // Get topic metadata
         TopicMetadata metadata = getTopicMetadata(topic);
         
-        // Select partition
-        int targetPartition = selectPartition(key, partition, metadata.getPartitions().size());
+        // Select partition (use first message's key if no explicit partition)
+        String firstKey = messages.get(0).getKey();
+        int targetPartition = selectPartition(firstKey, partition, metadata.getPartitions().size());
         
         // Find leader broker for partition
         PartitionMetadata partitionMeta = metadata.getPartitions().stream()
@@ -61,20 +76,22 @@ public class SimpleProducer {
         
         String leaderUrl = partitionMeta.getLeader().getHost() + ":" + partitionMeta.getLeader().getPort();
         
-        // Create produce message with Base64-encoded value (as string for JSON serialization)
-        String base64Value = java.util.Base64.getEncoder().encodeToString(value.getBytes());
-        
-        // Create a custom message map to ensure proper JSON serialization
-        java.util.Map<String, Object> messageMap = new java.util.HashMap<>();
-        messageMap.put("key", key);
-        messageMap.put("value", base64Value);  // Send as Base64 string, not byte array
-        // Don't send timestamp - let server generate it
+        // Create batch of messages with Base64-encoded values
+        List<Map<String, Object>> messageMaps = new java.util.ArrayList<>();
+        for (MessageEntry entry : messages) {
+            String base64Value = java.util.Base64.getEncoder().encodeToString(entry.getValue().getBytes());
+            
+            java.util.Map<String, Object> messageMap = new java.util.HashMap<>();
+            messageMap.put("key", entry.getKey());
+            messageMap.put("value", base64Value);
+            messageMaps.add(messageMap);
+        }
         
         // Create request map
         java.util.Map<String, Object> requestMap = new java.util.HashMap<>();
         requestMap.put("topic", topic);
         requestMap.put("partition", targetPartition);
-        requestMap.put("messages", java.util.List.of(messageMap));
+        requestMap.put("messages", messageMaps);
         requestMap.put("producerId", "cli-producer");
         requestMap.put("producerEpoch", 0);
         requestMap.put("requiredAcks", acks);
@@ -155,5 +172,21 @@ public class SimpleProducer {
     public void close() {
         // HttpClient doesn't need explicit closing in Java 11+
         metadataCache.clear();
+    }
+    
+    /**
+     * Simple message entry for batch operations
+     */
+    public static class MessageEntry {
+        private final String key;
+        private final String value;
+        
+        public MessageEntry(String key, String value) {
+            this.key = key;
+            this.value = value;
+        }
+        
+        public String getKey() { return key; }
+        public String getValue() { return value; }
     }
 }

@@ -150,32 +150,46 @@ Write-Host ""
 
 # Test 5: Batch Production
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "Test Suite 5: Batch Production" -ForegroundColor Cyan
+Write-Host "Test Suite 5: Batch Production (File-Based)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-Write-Host "[Batch Test] Producing 10 messages rapidly..." -ForegroundColor Yellow
-$batchSuccess = 0
-$batchFailed = 0
+# Create a batch file for testing
+$batchFile = "test-batch-temp.txt"
+Write-Host "[Setup] Creating batch file with 10 messages..." -ForegroundColor Yellow
 
-for ($i = 1; $i -le 10; $i++) {
-    $result = & java -jar $cliJar produce --topic $testTopic --key "batch-key-$i" --value "Batch message $i" 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        $batchSuccess++
-        Write-Host "  Message $i sent successfully" -ForegroundColor Gray
-    } else {
-        $batchFailed++
-        Write-Host "  Message $i failed: $result" -ForegroundColor Red
-    }
-}
+$batchContent = @"
+# Batch test messages
+batch-key-1:Batch message 1 with key
+batch-key-2:Batch message 2 with key
+batch-key-3:Batch message 3 with key
+Batch message 4 without key
+Batch message 5 without key
+order-100:{"orderId": "100", "amount": 199.99, "status": "pending"}
+order-101:{"orderId": "101", "amount": 299.99, "status": "confirmed"}
+Standalone message 8
+user-500:USER_LOGIN_EVENT
+admin-001:ADMIN_ACTION_COMPLETED
+"@
 
-Write-Host "  Batch Results: $batchSuccess succeeded, $batchFailed failed" -ForegroundColor Cyan
-if ($batchFailed -eq 0) {
-    Write-Host "  ??? PASSED" -ForegroundColor Green
-    $testsPassed++
-} else {
-    Write-Host "  ??? FAILED" -ForegroundColor Red
-    $testsFailed++
-}
+Set-Content -Path $batchFile -Value $batchContent
+Write-Host "  Created batch file: $batchFile" -ForegroundColor Gray
+
+# Test batch produce with acks=-1
+Test-CliCommand "Batch Produce (acks=-1)" @("produce", "--topic", $testTopic, "--batch-file", $batchFile, "--acks", "-1")
+
+# Test batch produce with acks=1
+Test-CliCommand "Batch Produce (acks=1)" @("produce", "--topic", $testTopic, "--batch-file", $batchFile, "--acks", "1")
+
+# Test batch produce to specific partition
+Test-CliCommand "Batch Produce to partition 0" @("produce", "--topic", $testTopic, "--batch-file", $batchFile, "--partition", "0")
+
+# Test batch with non-existent file
+Test-CliCommand "Batch with non-existent file" @("produce", "--topic", $testTopic, "--batch-file", "non-existent-file.txt") -ShouldSucceed $false
+
+# Cleanup
+Remove-Item -Path $batchFile -ErrorAction SilentlyContinue
+
+Write-Host "[Cleanup] Removed temporary batch file" -ForegroundColor Gray
 
 Write-Host ""
 

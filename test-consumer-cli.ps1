@@ -40,17 +40,33 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Host ""
-Write-Host "[Setup] Producing 30 test messages..." -ForegroundColor Yellow
+Write-Host "[Setup] Producing 30 test messages using batch processing..." -ForegroundColor Yellow
 
-for ($i = 1; $i -le 30; $i++) {
-    $partition = ($i - 1) % 3
-    & java -jar $cliJar produce --topic $testTopic --key "key-$i" --value "Message $i" --partition $partition 2>&1 | Out-Null
-    if ($i % 10 -eq 0) {
-        Write-Host "  Progress: $i/30" -ForegroundColor Gray
+# Create batch files for each partition
+for ($p = 0; $p -lt 3; $p++) {
+    $batchFile = "test-consumer-batch-p$p.txt"
+    $batchContent = ""
+    
+    for ($i = 1; $i -le 10; $i++) {
+        $msgNum = ($p * 10) + $i
+        $batchContent += "key-$msgNum`:Message $msgNum`n"
     }
+    
+    Set-Content -Path $batchFile -Value $batchContent
+    
+    # Produce batch to specific partition
+    & java -jar $cliJar produce --topic $testTopic --batch-file $batchFile --partition $p --acks 1 2>&1 | Out-Null
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  Batch for partition $p produced (10 messages)" -ForegroundColor Gray
+    } else {
+        Write-Host "  [WARN] Batch for partition $p failed" -ForegroundColor Yellow
+    }
+    
+    Remove-Item -Path $batchFile -ErrorAction SilentlyContinue
 }
 
-Write-Host "[PASS] Messages produced" -ForegroundColor Green
+Write-Host "[PASS] Messages produced using batch mode" -ForegroundColor Green
 Write-Host ""
 
 Start-Sleep -Seconds 2
@@ -129,15 +145,25 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Test Suite 3: Performance Test" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-Write-Host "[Setup] Producing 50 more messages for performance test..." -ForegroundColor Gray
+Write-Host "[Setup] Producing 50 more messages using batch processing..." -ForegroundColor Gray
+
+# Create a batch file with 50 messages
+$perfBatchFile = "test-perf-batch.txt"
+$perfBatchContent = ""
+
 for ($i = 51; $i -le 100; $i++) {
-    $partition = ($i - 1) % 3
-    & java -jar $cliJar produce --topic $testTopic --key "key-$i" --value "Message $i" --partition $partition 2>&1 | Out-Null
-    if ($i % 25 -eq 0) {
-        Write-Host "  Progress: $i/100" -ForegroundColor Gray
-    }
+    $perfBatchContent += "key-$i`:Message $i`n"
 }
-Write-Host "[PASS] Additional messages produced" -ForegroundColor Green
+
+Set-Content -Path $perfBatchFile -Value $perfBatchContent
+
+# Distribute across partitions using batch mode
+for ($p = 0; $p -lt 3; $p++) {
+    & java -jar $cliJar produce --topic $testTopic --batch-file $perfBatchFile --partition $p --acks 1 2>&1 | Out-Null
+}
+
+Remove-Item -Path $perfBatchFile -ErrorAction SilentlyContinue
+Write-Host "[PASS] Additional messages produced using batch mode" -ForegroundColor Green
 
 Write-Host "[Test 6] Consume 50 messages (performance test)" -ForegroundColor Yellow
 $startTime = Get-Date
