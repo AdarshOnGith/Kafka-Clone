@@ -1,8 +1,10 @@
 package com.distributedmq.client.cli.utils;
 
 import com.distributedmq.common.config.ServiceDiscovery;
+import com.distributedmq.common.dto.ConsumerGroupResponse;
 import com.distributedmq.common.dto.CreateTopicRequest;
 import com.distributedmq.common.model.TopicMetadata;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.net.URI;
@@ -30,14 +32,18 @@ public class MetadataServiceClient {
         if (metadataUrl != null) {
             this.controllerUrl = metadataUrl;
         } else {
-            this.controllerUrl = discoverController();
+            try {
+                this.controllerUrl = discoverController();
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to discover controller", e);
+            }
         }
     }
     
     /**
      * Discover active controller from configured metadata services
      */
-    private String discoverController() {
+    public String discoverController() throws Exception {
         ServiceDiscovery.loadConfig();
         List<ServiceDiscovery.ServiceInfo> metadataServices = ServiceDiscovery.getAllMetadataServices();
         
@@ -129,5 +135,51 @@ public class MetadataServiceClient {
         }
         
         return objectMapper.readValue(response.body(), TopicMetadata.class);
+    }
+    
+    /**
+     * List all consumer groups
+     */
+    public List<ConsumerGroupResponse> listConsumerGroups() throws Exception {
+        String url = controllerUrl + "/api/v1/metadata/consumer-groups";
+        
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(10))
+                .GET()
+                .build();
+        
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("Failed to list consumer groups: HTTP " + response.statusCode());
+        }
+        
+        return objectMapper.readValue(response.body(), new TypeReference<List<ConsumerGroupResponse>>() {});
+    }
+    
+    /**
+     * Describe a specific consumer group
+     */
+    public ConsumerGroupResponse describeConsumerGroup(String groupId) throws Exception {
+        String url = controllerUrl + "/api/v1/metadata/consumer-groups/" + groupId;
+        
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(10))
+                .GET()
+                .build();
+        
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        
+        if (response.statusCode() == 404) {
+            return null;
+        }
+        
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("Failed to describe consumer group: HTTP " + response.statusCode());
+        }
+        
+        return objectMapper.readValue(response.body(), ConsumerGroupResponse.class);
     }
 }

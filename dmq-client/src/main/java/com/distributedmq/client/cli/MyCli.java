@@ -52,6 +52,12 @@ public class MyCli {
                 return new CreateTopicCommand();
             case "produce":
                 return new ProduceCommand();
+            case "consume":
+                return new ConsumeCommand();
+            case "list-groups":
+                return new ListGroupsCommand();
+            case "describe-group":
+                return new DescribeGroupCommand();
             case "help":
             case "--help":
             case "-h":
@@ -76,16 +82,34 @@ public class MyCli {
         System.out.println();
         System.out.println("Usage: mycli <command> [options]");
         System.out.println();
-        System.out.println("Commands:");
-        System.out.println("  create-topic    Create a new topic");
-        System.out.println("  produce         Produce messages to a topic");
-        System.out.println("  help            Show this help message");
-        System.out.println("  version         Show version information");
+        System.out.println("Topic Management:");
+        System.out.println("  create-topic       Create a new topic");
+        System.out.println();
+        System.out.println("Producer Commands:");
+        System.out.println("  produce            Produce messages to a topic");
+        System.out.println();
+        System.out.println("Consumer Commands:");
+        System.out.println("  consume            Consume messages from a topic");
+        System.out.println("  list-groups        List all consumer groups");
+        System.out.println("  describe-group     Describe a consumer group");
+        System.out.println();
+        System.out.println("General:");
+        System.out.println("  help               Show this help message");
+        System.out.println("  version            Show version information");
         System.out.println();
         System.out.println("Run 'mycli <command> --help' for more information on a command.");
         System.out.println();
         System.out.println("Examples:");
+        System.out.println("  # Create a topic");
         System.out.println("  mycli create-topic --name orders --partitions 3 --replication-factor 2");
+        System.out.println();
+        System.out.println("  # Produce a message");
         System.out.println("  mycli produce --topic orders --key order-123 --value \"Order data\"");
+        System.out.println();
+        System.out.println("  # Consume messages");
+        System.out.println("  mycli consume --topic orders --partition 0 --from-beginning");
+        System.out.println();
+        System.out.println("  # List consumer groups");
+        System.out.println("  mycli list-groups");
     }
 }
