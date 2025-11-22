@@ -13,6 +13,8 @@ import com.distributedmq.metadata.coordination.PartitionInfo;
 import com.distributedmq.metadata.coordination.UpdatePartitionLeaderCommand;
 import com.distributedmq.metadata.coordination.UpdateISRCommand;
 import com.distributedmq.metadata.coordination.UpdateBrokerStatusCommand;
+import com.distributedmq.metadata.coordination.ConsumerGroupInfo;
+import com.distributedmq.metadata.coordination.UpdateConsumerGroupLeaderCommand;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -361,7 +363,64 @@ public class ControllerServiceImpl implements ControllerService {
             }
         }
         
-        // Step 5: Push broker status change and metadata updates to all storage nodes
+        // Step 5: Reassign consumer groups coordinated by failed broker
+        try {
+            log.info("Checking consumer groups coordinated by failed broker {}...", brokerId);
+            List<ConsumerGroupInfo> affectedGroups = metadataStateMachine.getConsumerGroupsByLeader(brokerId);
+            
+            if (!affectedGroups.isEmpty()) {
+                log.warn("Found {} consumer groups coordinated by failed broker {}", affectedGroups.size(), brokerId);
+                
+                int groupReassignSuccess = 0;
+                int groupReassignFailed = 0;
+                
+                for (ConsumerGroupInfo group : affectedGroups) {
+                    try {
+                        // Select new group leader from available online brokers
+                        List<BrokerInfo> onlineBrokers = metadataStateMachine.getAllBrokers().values().stream()
+                                .filter(b -> b.getStatus() == BrokerStatus.ONLINE)
+                                .collect(Collectors.toList());
+                        
+                        if (onlineBrokers.isEmpty()) {
+                            log.error("No online brokers available to reassign consumer group {}", group.getGroupId());
+                            groupReassignFailed++;
+                            continue;
+                        }
+                        
+                        // Simple selection: first available broker
+                        // TODO: Implement load-based selection
+                        Integer newLeader = onlineBrokers.get(0).getBrokerId();
+                        
+                        UpdateConsumerGroupLeaderCommand cmd = UpdateConsumerGroupLeaderCommand.builder()
+                                .groupId(group.getGroupId())
+                                .newGroupLeaderBrokerId(newLeader)
+                                .timestamp(System.currentTimeMillis())
+                                .build();
+                        
+                        raftController.appendCommand(cmd).get(10, TimeUnit.SECONDS);
+                        groupReassignSuccess++;
+                        
+                        log.info("✓ Reassigned consumer group {} from broker-{} to broker-{}", 
+                                 group.getGroupId(), brokerId, newLeader);
+                        
+                    } catch (Exception e) {
+                        groupReassignFailed++;
+                        log.error("✗ Failed to reassign consumer group {}: {}", 
+                                 group.getGroupId(), e.getMessage(), e);
+                    }
+                }
+                
+                log.info("Consumer group reassignment: {} succeeded, {} failed", 
+                         groupReassignSuccess, groupReassignFailed);
+            } else {
+                log.info("No consumer groups coordinated by broker {}", brokerId);
+            }
+        } catch (Exception e) {
+            log.error("Error during consumer group reassignment for broker {}: {}", brokerId, e.getMessage(), e);
+            // Don't fail overall broker failure handling
+        }
+        
+        // Step 6: Push broker status change and metadata updates to all storage nodes
         try {
             log.info("Pushing broker failure updates to all storage nodes...");
             metadataPushService.pushFullClusterMetadata(getActiveBrokers());
@@ -372,7 +431,7 @@ public class ControllerServiceImpl implements ControllerService {
             // Don't fail failure handling if push fails - storage nodes will eventually sync
         }
         
-        // Step 6: Summary logging
+        // Step 7: Summary logging
         log.warn("========================================");
         log.warn("Broker failure handling completed for broker {}", brokerId);
         log.warn("Summary:");

@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
 import java.io.IOException;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 import java.util.Map;
 
@@ -17,6 +18,7 @@ public class ServiceDiscovery {
     private static final String[] CONFIG_FILE_PATHS = {
         "config/services.json",           // From project root
         "../config/services.json",        // From service subdirectories
+        "../../config/services.json",     // From target directory (CLI)
         "src/main/resources/services.json" // From classpath
     };
     private static ServiceConfig config;
@@ -153,7 +155,9 @@ public class ServiceDiscovery {
     }
 
     public static class Services {
+        @JsonProperty("metadata-services")
         private List<ServiceInfo> metadataServices = new java.util.ArrayList<>();
+        @JsonProperty("storage-services")
         private List<StorageServiceInfo> storageServices = new java.util.ArrayList<>();
 
         public List<ServiceInfo> getMetadataServices() { return metadataServices; }

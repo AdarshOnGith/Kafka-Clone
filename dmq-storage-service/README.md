@@ -1,388 +1,1018 @@
 # DMQ Storage Service
 
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/yourusername/dmq-storage-service)
+[![Java](https://img.shields.io/badge/Java-11-orange.svg)](https://openjdk.java.net/)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-2.7.18-brightgreen.svg)](https://spring.io/projects/spring-boot)
+[![Status](https://img.shields.io/badge/status-active-success.svg)]()
+
 ## Overview
 
-The Storage Service is the persistence layer of the Distributed Message Queue system. It implements:
+**DMQ Storage Service** is the storage broker component of DistributedMQ, responsible for message storage, partition management, and metadata synchronization. It implements automatic controller discovery, heartbeat-based health monitoring, and seamless failover handling.
 
-- **Write-Ahead Log (WAL)**: Durable message storage with segment files
-- **Leader/Follower Replication**: High availability through data replication
-- **In-Sync Replicas (ISR)**: Tracks which replicas are caught up
-- **High Water Mark (HWM)**: Ensures consistent reads across replicas
-- **Zero-Copy Transfers**: Efficient data movement using FileChannel
+### Key Features
+
+- 🔍 **Automatic Controller Discovery**: Parallel queries to all metadata nodes on startup
+- 💓 **Heartbeat Management**: 5-second interval health reporting to controller
+- 🔄 **Automatic Failover**: Seamless switch to new controller during failures
+- 📊 **Metadata Synchronization**: Version-based staleness detection and refresh
+- 📢 **Push Notifications**: Real-time CONTROLLER_CHANGED event handling
+- 🎯 **Partition Management**: Leader and replica partition handling
+- 📝 **Comprehensive Logging**: Emoji-based logging for easy debugging
+
+---
+
+## Table of Contents
+
+1. [Architecture](#architecture)
+2. [Core Components](#core-components)
+3. [Configuration](#configuration)
+4. [Running the Service](#running-the-service)
+5. [API Endpoints](#api-endpoints)
+6. [Heartbeat Flow](#heartbeat-flow)
+7. [Controller Discovery](#controller-discovery)
+8. [Failover Handling](#failover-handling)
+9. [Metadata Synchronization](#metadata-synchronization)
+10. [Testing](#testing)
+11. [Troubleshooting](#troubleshooting)
+
+---
 
 ## Architecture
 
-### Technology Stack
-- **Spring Boot 3.1.5**: Core framework
-- **gRPC**: High-performance RPC for append/fetch/replication
-- **FileChannel & MappedByteBuffer**: Efficient file I/O
-- **Consul**: Service discovery
-- **CRC32**: Data integrity verification
+### Component Overview
 
-### Key Components
-
-1. **LogSegment**: Individual segment file (1GB default)
-2. **PartitionLog**: Manages all segments for a partition
-3. **ReplicationManager**: Leader-to-follower replication
-4. **StorageServiceGrpcServer**: gRPC API implementation
-5. **HeartbeatService**: Health reporting to Metadata Service
-
-## Write-Ahead Log Design
-
-### File Structure
 ```
-data/storage/
-├── orders-0/
-│   ├── 00000000000000000000.log    # Segment file
-│   ├── 00000000000000000000.index  # Index file
-│   ├── 00000000001000000000.log    # Next segment
-│   └── 00000000001000000000.index
-├── orders-1/
-│   └── ...
-└── orders-2/
-    └── ...
-```
-
-### Segment File Format
-```
-[Magic Byte: 1 byte]
-[Record Count: 4 bytes]
-[Records...]
-
-Each Record:
-├── Offset: 8 bytes
-├── Timestamp: 8 bytes
-├── Leader Epoch: 4 bytes
-├── Key Length: 4 bytes
-├── Key: variable
-├── Value Length: 4 bytes
-├── Value: variable
-├── Header Count: 4 bytes
-├── Headers: variable
-└── CRC32: 4 bytes
-```
-
-### Segment Rolling
-- **Trigger**: Segment reaches 1GB (configurable)
-- **Process**: Close current segment, create new with next base offset
-- **Retention**: Old segments deleted after 7 days (configurable)
-
-## Replication Protocol
-
-### Leader-to-Follower Flow
-```
-1. Leader receives AppendRecords request
-2. Leader appends to local WAL
-3. Leader sends ReplicateRecords to all followers (parallel)
-4. Followers append to their local WAL
-5. Followers respond with last offset
-6. Leader updates replica offsets
-7. Leader calculates new HWM = min(all ISR offsets)
-8. Leader responds to producer
+┌──────────────────────────────────────────────────────────┐
+│              DMQ Storage Service (Broker)                │
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│  ┌────────────────────────────────────────────────────┐ │
+│  │         HeartbeatSender (Scheduled)                │ │
+│  │  • 5-second interval                               │ │
+│  │  • Controller sync from MetadataStore             │ │
+│  │  • Exponential backoff on failures                │ │
+│  │  • Rediscovery after 3 consecutive failures       │ │
+│  └────────────────┬───────────────────────────────────┘ │
+│                   │                                     │
+│  ┌────────────────▼───────────────────────────────────┐ │
+│  │         ControllerDiscoveryService                 │ │
+│  │  • Parallel queries to all metadata nodes         │ │
+│  │  • First successful response strategy             │ │
+│  │  • Retry with backoff (1s, 2s, 4s, 8s)          │ │
+│  └────────────────┬───────────────────────────────────┘ │
+│                   │                                     │
+│  ┌────────────────▼───────────────────────────────────┐ │
+│  │              MetadataStore                         │ │
+│  │  • Controller info (volatile for thread safety)   │ │
+│  │  • Topic/Partition metadata cache                 │ │
+│  │  • Version tracking                               │ │
+│  │  • CONTROLLER_CHANGED handler                     │ │
+│  │  • Periodic refresh (2-minute interval)           │ │
+│  └────────────────┬───────────────────────────────────┘ │
+│                   │                                     │
+│  ┌────────────────▼───────────────────────────────────┐ │
+│  │           PartitionManager                         │ │
+│  │  • Leader partition management                     │ │
+│  │  • Replica partition management                    │ │
+│  │  • Partition assignment tracking                   │ │
+│  └────────────────────────────────────────────────────┘ │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+                           │
+                           │ HTTP REST
+                           │
+                  ┌────────▼────────┐
+                  │   Metadata      │
+                  │   Controller    │
+                  │   (Leader)      │
+                  └─────────────────┘
 ```
 
-### In-Sync Replica (ISR) Management
-**Criteria for ISR membership**:
-- Time lag < 10 seconds (configurable)
-- Offset lag < 4,000 messages (configurable)
+### Communication Patterns
 
-**ISR Check**:
-- Runs every 5 seconds
-- Removes slow replicas from ISR
-- Re-adds replicas that catch up
+1. **Startup Sequence**:
+   - Controller discovery (parallel queries)
+   - Broker registration
+   - Initial metadata pull
+   - Heartbeat start
 
-**High Water Mark (HWM)**:
-```
-HWM = min(LEO of all ISR replicas)
-```
-- Consumers only see records up to HWM
-- Ensures durability guarantees
+2. **Heartbeat Cycle** (every 5 seconds):
+   - Sync controller info from MetadataStore
+   - Send heartbeat to current controller
+   - Receive ACK with metadata version
+   - Check version staleness
+   - Refresh metadata if needed
 
-## API Reference
+3. **Failover Handling**:
+   - Detect controller failure (heartbeat errors)
+   - Receive CONTROLLER_CHANGED push notification
+   - Update MetadataStore
+   - Sync on next heartbeat
+   - Switch to new controller
 
-### gRPC Methods
+---
 
-#### AppendRecords (Flow 1 Step 5)
-```protobuf
-rpc AppendRecords(AppendRequest) returns (AppendResponse);
+## Core Components
 
-// Called by Producer Ingestion Service
-// Writes records to leader's WAL
-// Replicates to followers based on requiredAcks
-```
+### 1. HeartbeatSender
 
-#### FetchRecords (Flow 2 Step 4)
-```protobuf
-rpc FetchRecords(FetchRequest) returns (FetchResponse);
+**Purpose**: Manages periodic heartbeat transmission to the controller.
 
-// Called by Consumer Egress Service
-// Reads records from startOffset up to HWM
-// Returns nextOffset for subsequent fetches
-```
+**Key Responsibilities**:
+- Send heartbeat every 5 seconds
+- Sync controller info before each heartbeat
+- Handle heartbeat failures with exponential backoff
+- Trigger rediscovery after 3 consecutive failures
+- Process heartbeat responses (version check)
 
-#### ReplicateRecords (Flow 1 Step 6)
-```protobuf
-rpc ReplicateRecords(ReplicationRequest) returns (ReplicationResponse);
-
-// Called by leader's ReplicationManager
-// Follower appends records to local WAL
-// Returns last offset for ISR tracking
-```
-
-#### GetPartitionStatus
-```protobuf
-rpc GetPartitionStatus(PartitionStatusRequest) returns (PartitionStatusResponse);
-
-// Returns LEO, HWM, ISR list
-// Used for monitoring and coordination
-```
-
-### REST Endpoints
-
-```http
-GET  /api/storage/partitions/{topic}/{partition}
-POST /api/storage/partitions/{topic}/{partition}/flush
-GET  /api/storage/status
-```
-
-## Configuration
-
-### application.yml
+**Configuration**:
 ```yaml
 dmq:
   storage:
-    node-id: storage-node-01
-    data-dir: ./data/storage
-    
-    wal:
-      segment-size-bytes: 1073741824  # 1 GB
-      flush-interval-ms: 1000          # Flush every 1 second
-      retention-hours: 168             # 7 days
-    
-    replication:
-      fetch-max-bytes: 1048576         # 1 MB
-      replica-lag-time-max-ms: 10000   # 10 seconds
-      replica-lag-max-messages: 4000
-    
-    isr:
-      check-interval-ms: 5000          # Check ISR every 5 seconds
+    heartbeat:
+      interval-ms: 5000          # Heartbeat interval
+      max-consecutive-failures: 3 # Trigger rediscovery threshold
 ```
+
+**Lifecycle**:
+```
+@PostConstruct (Initialization)
+    ↓
+Discover Controller
+    ↓
+Register with Controller
+    ↓
+Pull Initial Metadata
+    ↓
+@Scheduled (Every 5 seconds)
+    ↓
+Sync Controller Info → Send Heartbeat → Process Response
+    ↓
+[If 3 failures] → Rediscover Controller
+```
+
+**Code Example**:
+```java
+@Scheduled(fixedDelayString = "${dmq.storage.heartbeat.interval-ms:5000}")
+public void sendHeartbeat() {
+    // 1. Sync controller info from MetadataStore
+    syncControllerInfoFromMetadataStore();
+    
+    // 2. Build heartbeat request
+    HeartbeatRequest request = HeartbeatRequest.builder()
+        .brokerId(brokerId)
+        .timestamp(System.currentTimeMillis())
+        .metadataVersion(metadataStore.getMetadataVersion())
+        .build();
+    
+    // 3. Send to controller
+    String endpoint = currentControllerUrl + "/api/v1/metadata/heartbeat/" + brokerId;
+    HeartbeatResponse response = restTemplate.postForObject(endpoint, request, HeartbeatResponse.class);
+    
+    // 4. Process response
+    if (response != null && response.isAck()) {
+        consecutiveFailures = 0;
+        metadataStore.checkAndRefreshMetadata(response.getCurrentVersion());
+    }
+}
+```
+
+---
+
+### 2. ControllerDiscoveryService
+
+**Purpose**: Discovers the current Raft leader (controller) from metadata cluster.
+
+**Key Features**:
+- **Parallel Queries**: Query all metadata nodes simultaneously
+- **First Response**: Use first successful response
+- **Retry Logic**: Exponential backoff (1s, 2s, 4s, 8s)
+- **Fault Tolerance**: Any node can respond
+
+**Discovery Algorithm**:
+```java
+public ControllerInfo discoverController() {
+    // 1. Get metadata nodes from services.json
+    List<MetadataServiceInfo> metadataNodes = getMetadataNodes();
+    
+    // 2. Create parallel futures
+    List<CompletableFuture<ControllerInfo>> futures = metadataNodes.stream()
+        .map(node -> CompletableFuture.supplyAsync(() -> {
+            try {
+                String url = node.getUrl() + "/api/v1/metadata/controller";
+                return restTemplate.getForObject(url, ControllerInfo.class);
+            } catch (Exception e) {
+                log.error("❌ Failed to query node {}: {}", node.getId(), e.getMessage());
+                return null;
+            }
+        }))
+        .collect(Collectors.toList());
+    
+    // 3. Wait for all queries
+    CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+    
+    // 4. Return first successful result
+    return futures.stream()
+        .map(f -> f.getNow(null))
+        .filter(Objects::nonNull)
+        .findFirst()
+        .orElseThrow(() -> new RuntimeException("Controller discovery failed"));
+}
+```
+
+**Performance**:
+- **Sequential**: 15-20 seconds (5s timeout × 3 nodes)
+- **Parallel**: 1-2 seconds (single query time)
+- **Improvement**: 90% faster
+
+---
+
+### 3. MetadataStore
+
+**Purpose**: Local cache for cluster metadata with version tracking.
+
+**Stored Data**:
+- **Controller Info**: URL, ID, term (volatile for thread safety)
+- **Topic Metadata**: Topics, partitions, leaders, replicas
+- **Version**: Metadata version for staleness detection
+
+**Key Methods**:
+
+#### handleMetadataUpdate()
+```java
+public void handleMetadataUpdate(MetadataUpdateRequest request) {
+    switch (request.getUpdateType()) {
+        case CONTROLLER_CHANGED:
+            // Update controller info
+            this.currentControllerId = request.getControllerId();
+            this.currentControllerUrl = request.getControllerUrl();
+            this.currentControllerTerm = request.getTerm();
+            log.info("🔄 Controller changed to Node {} (Term: {})", 
+                currentControllerId, currentControllerTerm);
+            break;
+            
+        case BROKER_STATUS_CHANGED:
+            // Handle broker status changes
+            break;
+            
+        case TOPIC_CREATED:
+            // Refresh metadata
+            pullMetadataFromController();
+            break;
+    }
+}
+```
+
+#### checkAndRefreshMetadata()
+```java
+public void checkAndRefreshMetadata(Long remoteVersion) {
+    if (metadataVersion < remoteVersion) {
+        log.info("🔄 Metadata stale (local: {}, remote: {}), refreshing...", 
+            metadataVersion, remoteVersion);
+        pullMetadataFromController();
+    }
+}
+```
+
+#### pullMetadataFromController()
+```java
+public void pullMetadataFromController() {
+    try {
+        String url = currentControllerUrl + "/api/v1/metadata/cluster";
+        ClusterMetadata metadata = restTemplate.getForObject(url, ClusterMetadata.class);
+        
+        // Update local cache
+        this.topicPartitions.clear();
+        for (TopicMetadata topic : metadata.getTopics()) {
+            // Cache topic and partition info
+        }
+        
+        this.metadataVersion = metadata.getVersion();
+        this.lastMetadataUpdateTimestamp = System.currentTimeMillis();
+        
+        log.info("✅ Metadata updated to version {}", metadataVersion);
+    } catch (Exception e) {
+        log.error("❌ Failed to pull metadata: {}", e.getMessage());
+    }
+}
+```
+
+**Thread Safety**:
+- `volatile` fields for controller info (cross-thread visibility)
+- `ConcurrentHashMap` for topic/partition metadata
+- Atomic operations for version updates
+
+---
+
+### 4. PartitionManager
+
+**Purpose**: Manages partition assignments and leadership.
+
+**Responsibilities**:
+- Track leader partitions for this broker
+- Track replica partitions for this broker
+- Update assignments from controller
+- Handle partition reassignment
+
+**Data Structures**:
+```java
+@Component
+public class PartitionManager {
+    // Partitions where this broker is leader
+    private final Map<String, Set<Integer>> leaderPartitions = new ConcurrentHashMap<>();
+    
+    // Partitions where this broker is replica
+    private final Map<String, Set<Integer>> replicaPartitions = new ConcurrentHashMap<>();
+    
+    public void updatePartitionAssignments(List<PartitionMetadata> partitions) {
+        for (PartitionMetadata partition : partitions) {
+            if (partition.getLeader().equals(brokerId)) {
+                leaderPartitions.computeIfAbsent(partition.getTopic(), k -> new HashSet<>())
+                    .add(partition.getId());
+            }
+            
+            if (partition.getReplicas().contains(brokerId)) {
+                replicaPartitions.computeIfAbsent(partition.getTopic(), k -> new HashSet<>())
+                    .add(partition.getId());
+            }
+        }
+    }
+}
+```
+
+---
+
+## Configuration
+
+### services.json (External Configuration)
+
+```json
+{
+  "services": {
+    "metadata-services": [
+      {
+        "id": 1,
+        "host": "localhost",
+        "port": 9091,
+        "url": "http://localhost:9091"
+      },
+      {
+        "id": 2,
+        "host": "localhost",
+        "port": 9092,
+        "url": "http://localhost:9092"
+      },
+      {
+        "id": 3,
+        "host": "localhost",
+        "port": 9093,
+        "url": "http://localhost:9093"
+      }
+    ]
+  }
+}
+```
+
+**Location**: Place in project root or specify path via environment variable.
+
+---
+
+### application.yml
+
+```yaml
+server:
+  port: 8081  # Storage broker port
+
+dmq:
+  storage:
+    broker-id: 101  # Unique broker ID
+    host: localhost
+    port: 8081
+    
+    heartbeat:
+      interval-ms: 5000           # Heartbeat interval
+      max-consecutive-failures: 3 # Rediscovery trigger
+      
+    metadata:
+      refresh-interval-ms: 120000 # Periodic refresh (2 minutes)
+      
+spring:
+  application:
+    name: dmq-storage-service
+    
+logging:
+  level:
+    com.distributedmq.storage: DEBUG
+```
+
+---
+
+### Environment Variables
+
+Override configuration via environment variables:
+
+```bash
+# Broker Configuration
+export DMQ_BROKER_ID=101
+export SERVER_PORT=8081
+
+# Heartbeat Configuration
+export DMQ_STORAGE_HEARTBEAT_INTERVAL_MS=5000
+
+# Metadata Configuration
+export DMQ_STORAGE_METADATA_REFRESH_INTERVAL_MS=120000
+```
+
+---
 
 ## Running the Service
 
 ### Prerequisites
-1. **Consul** running on `localhost:8500`
-2. **Metadata Service** running (for registration)
 
-### Build and Run
+- Java 11+
+- Maven 3.6+
+- services.json in project root
+- Metadata cluster running
+
+### Build
+
 ```bash
-# Build
+cd dmq-storage-service
 mvn clean package
-
-# Run (as storage-node-01)
-java -jar target/dmq-storage-service-1.0.0.jar
-
-# Run additional nodes
-java -jar target/dmq-storage-service-1.0.0.jar \
-  --dmq.storage.node-id=storage-node-02 \
-  --server.port=8083 \
-  --grpc.server.port=9093
 ```
 
-### Docker
+### Run Single Broker
+
 ```bash
-docker-compose up -d
+java -jar target/dmq-storage-service-1.0.0.jar \
+  --dmq.storage.broker-id=101 \
+  --server.port=8081
 ```
 
-## Performance Characteristics
+### Run Multiple Brokers (Windows)
 
-### Throughput
-- **Write**: 50,000+ msgs/sec per partition (single node)
-- **Read**: 100,000+ msgs/sec (sequential reads)
-- **Replication**: 30,000+ msgs/sec per follower
+```powershell
+# Terminal 1 - Broker 101
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "java -jar target/dmq-storage-service-1.0.0.jar --dmq.storage.broker-id=101 --server.port=8081"
 
-### Latency (p99)
-- **Append (leader-only ack)**: < 5ms
-- **Append (all ISR ack)**: < 20ms (3 replicas)
-- **Fetch**: < 10ms (cached in OS page cache)
+# Terminal 2 - Broker 102
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "java -jar target/dmq-storage-service-1.0.0.jar --dmq.storage.broker-id=102 --server.port=8082"
 
-### Storage Efficiency
-- **Compression**: Snappy (optional, ~40% reduction)
-- **Index**: Sparse index every 4KB of log
-- **Retention**: Time-based (7 days) or size-based
+# Terminal 3 - Broker 103
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "java -jar target/dmq-storage-service-1.0.0.jar --dmq.storage.broker-id=103 --server.port=8083"
+```
 
-## Integration with Other Services
+### Expected Startup Logs
 
-### Producer Ingestion Service (Flow 1 Step 5)
+```bash
+🚀 Starting DMQ Storage Service...
+📋 Broker ID: 101
+📋 Port: 8081
+
+🔍 Starting controller discovery...
+🔍 Querying metadata node 1: http://localhost:9091
+🔍 Querying metadata node 2: http://localhost:9092
+🔍 Querying metadata node 3: http://localhost:9093
+✅ Response from Node 2: controllerId=2, term=3
+✅ Controller discovered: http://localhost:9092
+
+📝 Registering with controller...
+✅ Broker 101 registered successfully
+
+📥 Pulling initial metadata from controller...
+✅ Metadata loaded: version=10, topics=5
+
+💓 Starting heartbeat sender...
+✅ Heartbeat sender initialized
+
+🎉 DMQ Storage Service started successfully!
+```
+
+---
+
+## API Endpoints
+
+### 1. Metadata Update Webhook
+
+**Endpoint**: `POST /api/v1/storage/metadata/update`
+
+**Purpose**: Receive push notifications from controller.
+
+**Request Body**:
+```json
+{
+  "updateType": "CONTROLLER_CHANGED",
+  "controllerId": 3,
+  "controllerUrl": "http://localhost:9093",
+  "term": 4,
+  "timestamp": 1731345678000
+}
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "message": "Metadata update processed"
+}
+```
+
+**Update Types**:
+- `CONTROLLER_CHANGED`: Controller failover
+- `BROKER_STATUS_CHANGED`: Broker status update
+- `TOPIC_CREATED`: New topic created
+- `PARTITION_REASSIGNED`: Partition reassignment
+
+---
+
+### 2. Health Check
+
+**Endpoint**: `GET /api/v1/storage/health`
+
+**Response**:
+```json
+{
+  "status": "UP",
+  "brokerId": 101,
+  "controllerConnected": true,
+  "currentController": "http://localhost:9092",
+  "metadataVersion": 15,
+  "lastHeartbeatTime": 1731345678000
+}
+```
+
+---
+
+### 3. Broker Info
+
+**Endpoint**: `GET /api/v1/storage/info`
+
+**Response**:
+```json
+{
+  "brokerId": 101,
+  "host": "localhost",
+  "port": 8081,
+  "status": "ONLINE",
+  "leaderPartitions": {
+    "orders": [0, 2],
+    "payments": [1]
+  },
+  "replicaPartitions": {
+    "orders": [1],
+    "payments": [0, 2]
+  },
+  "metadataVersion": 15
+}
+```
+
+---
+
+## Heartbeat Flow
+
+### Sequence Diagram
+
+```
+Every 5 seconds:
+
+Storage Broker                    Metadata Controller
+       │                                   │
+       ├──── 1. Sync Controller Info ─────┤
+       │     (from MetadataStore)          │
+       │     currentControllerUrl          │
+       │                                   │
+       ├──── 2. Build Heartbeat Request ──┤
+       │     {brokerId: 101,               │
+       │      timestamp: ...,              │
+       │      metadataVersion: 12}         │
+       │                                   │
+       ├──── 3. Send Heartbeat ───────────►│
+       │     POST /heartbeat/101           │
+       │                                   │
+       │     4. Leader Validation          │
+       │        isControllerLeader()?      │
+       │           ├── YES ───┐            │
+       │           └── NO  ───┼── 503 ────►│
+       │                      │   X-Controller-Leader: 3
+       │                                   │
+       │◄──── 5. Heartbeat Response ───────┤
+       │     {ack: true,                   │
+       │      currentVersion: 15}          │
+       │                                   │
+       ├──── 6. Version Check ─────────────┤
+       │     local: 12, remote: 15         │
+       │     → Stale! Trigger refresh      │
+       │                                   │
+       ├──── 7. Pull Metadata ────────────►│
+       │     GET /cluster                  │
+       │                                   │
+       │◄──── 8. Cluster Metadata ─────────┤
+       │     {version: 15, topics: [...]}  │
+       │                                   │
+       └──── 9. Update Local Cache ────────┘
+```
+
+---
+
+## Controller Discovery
+
+### Discovery Process
+
+```
+Startup
+   │
+   ├── Load metadata nodes from services.json
+   │   [Node 1: 9091, Node 2: 9092, Node 3: 9093]
+   │
+   ├── Create parallel futures for each node
+   │   ├── Future 1: Query Node 1
+   │   ├── Future 2: Query Node 2
+   │   └── Future 3: Query Node 3
+   │
+   ├── Wait for all futures to complete (1-2 seconds)
+   │
+   ├── Collect results
+   │   ├── Node 1: Timeout (null)
+   │   ├── Node 2: ControllerInfo{id: 2, term: 3} ✅
+   │   └── Node 3: ControllerInfo{id: 2, term: 3} ✅
+   │
+   ├── Return first non-null result
+   │   → Controller: Node 2 (http://localhost:9092)
+   │
+   └── Cache in MetadataStore
+```
+
+### Retry Logic
+
+```
+Attempt 1: Query all nodes → All timeout → Wait 1s
+Attempt 2: Query all nodes → All timeout → Wait 2s
+Attempt 3: Query all nodes → All timeout → Wait 4s
+Attempt 4: Query all nodes → All timeout → Wait 8s
+Attempt 5: Query all nodes → All timeout → Throw exception
+```
+
+---
+
+## Failover Handling
+
+### Failover Scenario
+
+```
+Timeline:
+
+0s: Normal Operation
+    Broker 101 → Controller Node 2 (http://localhost:9092)
+    💓 Heartbeat sent successfully
+
+5s: Controller Failure
+    ❌ Node 2 crashed
+    💓 Heartbeat failed: Connection refused
+    consecutiveFailures = 1
+
+10s: Raft Election in Progress
+    💓 Heartbeat failed: Connection refused
+    consecutiveFailures = 2
+
+12s: New Leader Elected
+    🎉 Node 3 elected as LEADER (term: 4)
+    📢 Pushing CONTROLLER_CHANGED to all brokers
+
+13s: CONTROLLER_CHANGED Received
+    📥 Broker 101 receives notification
+    🔄 MetadataStore updated:
+       currentControllerId = 3
+       currentControllerUrl = http://localhost:9093
+       currentControllerTerm = 4
+
+15s: Automatic Switch
+    💓 HeartbeatSender syncs from MetadataStore
+    🔄 Controller switched to Node 3
+    💓 Heartbeat sent to http://localhost:9093
+    ✅ Heartbeat ACK received
+    consecutiveFailures = 0
+
+Result: Total failover time = 15 seconds
+```
+
+### Failure Detection
+
+HeartbeatSender tracks consecutive failures:
+
 ```java
-// Producer Ingestion calls Storage Service leader
-AppendRequest request = AppendRequest.newBuilder()
-    .setTopic("orders")
-    .setPartition(0)
-    .addAllRecords(records)
-    .setRequiredAcks(-1)  // Wait for all ISR
-    .build();
+private void handleHeartbeatFailure(Exception e) {
+    consecutiveFailures++;
+    log.warn("❌ Heartbeat failed (attempt {}/{}): {}", 
+        consecutiveFailures, maxConsecutiveFailures, e.getMessage());
+    
+    if (consecutiveFailures >= maxConsecutiveFailures) {
+        log.warn("⚠️ {} consecutive failures, triggering rediscovery", consecutiveFailures);
+        rediscoverController();
+    }
+}
 
-AppendResponse response = storageStub.appendRecords(request);
-long baseOffset = response.getBaseOffset();
+private void rediscoverController() {
+    try {
+        log.info("🔍 Rediscovering controller...");
+        ControllerInfo controller = controllerDiscoveryService.discoverController();
+        
+        metadataStore.setControllerInfo(
+            controller.getControllerId(),
+            controller.getUrl(),
+            controller.getTerm()
+        );
+        
+        consecutiveFailures = 0;
+        log.info("✅ Rediscovery successful: {}", controller.getUrl());
+    } catch (Exception e) {
+        log.error("❌ Rediscovery failed: {}", e.getMessage());
+    }
+}
 ```
 
-### Consumer Egress Service (Flow 2 Step 4)
+---
+
+## Metadata Synchronization
+
+### Version Tracking
+
+Every heartbeat response includes metadata version:
+
+```json
+{
+  "ack": true,
+  "currentVersion": 15,
+  "controllerTerm": 3
+}
+```
+
+Broker checks if local version is stale:
+
 ```java
-// Consumer Egress calls Storage Service leader
-FetchRequest request = FetchRequest.newBuilder()
-    .setTopic("orders")
-    .setPartition(0)
-    .setStartOffset(1234567)
-    .setMaxBytes(1048576)  // 1 MB
-    .build();
-
-FetchResponse response = storageStub.fetchRecords(request);
-List<FetchedRecord> records = response.getRecordsList();
-long nextOffset = response.getNextOffset();
+if (localVersion < remoteVersion) {
+    pullMetadataFromController();
+}
 ```
 
-### Metadata Service (Flow 3 Step 1)
+### Periodic Refresh
+
+Fallback mechanism (every 2 minutes):
+
 ```java
-// Storage Service sends heartbeat every 3 seconds
-HeartbeatRequest request = HeartbeatRequest.newBuilder()
-    .setNodeId("storage-node-01")
-    .setTimestamp(System.currentTimeMillis())
-    .build();
-
-metadataStub.nodeHeartbeat(request);
+@Scheduled(fixedDelayString = "${dmq.storage.metadata.refresh-interval-ms:120000}")
+public void periodicMetadataRefresh() {
+    try {
+        metadataStore.pullMetadataFromController();
+        log.info("🔄 Periodic metadata refresh completed");
+    } catch (Exception e) {
+        log.error("❌ Periodic refresh failed: {}", e.getMessage());
+    }
+}
 ```
 
-## Replication Guarantees
+---
 
-### ACK Modes
+## Testing
 
-**acks=0** (Fire and Forget)
-- Leader doesn't wait for any acknowledgment
-- Highest throughput, lowest durability
-- Can lose data if leader crashes
+### Manual Testing
 
-**acks=1** (Leader Acknowledged)
-- Leader writes to local WAL, responds immediately
-- No replication wait
-- Can lose data if leader crashes before replication
+#### Test 1: Startup & Discovery
 
-**acks=-1** (All ISR Acknowledged)
-- Leader waits for all ISR replicas to acknowledge
-- Highest durability, lower throughput
-- No data loss as long as one ISR replica survives
+```bash
+# Start metadata cluster first
+# Then start storage broker
 
-### Consistency Model
-
-**Read-After-Write Consistency**:
-- Consumers only see records up to HWM
-- HWM = min offset replicated to all ISR
-- Guarantees no data loss on leader failure
-
-**Example**:
-```
-Leader LEO: 1000
-Follower-1 LEO: 998 (ISR)
-Follower-2 LEO: 995 (ISR)
-Follower-3 LEO: 900 (NOT ISR - lagging)
-
-HWM = min(998, 995) = 995
-Consumers see offsets 0-994 only
+# Expected logs:
+🔍 Starting controller discovery...
+✅ Controller discovered: http://localhost:9092
+📝 Registered with controller
+📥 Metadata loaded
+💓 Heartbeat sender started
 ```
 
-## Failure Scenarios
+#### Test 2: Heartbeat Flow
 
-### Leader Failure
-1. Metadata Service detects missing heartbeats (10+ seconds)
-2. Controller Service selects new leader from ISR
-3. Metadata Service updates partition leader
-4. Producers/Consumers query new leader address
-5. New leader promotes to accepting writes
+```bash
+# Monitor logs for 30 seconds
 
-### Follower Failure
-1. Leader's ReplicationManager detects failed replication
-2. Follower removed from ISR
-3. HWM calculation excludes failed follower
-4. When follower recovers, it catches up and rejoins ISR
+# Expected logs (every 5 seconds):
+💓 [Broker 101] Sending heartbeat
+✅ [Broker 101] Heartbeat ACK received
+```
 
-### Disk Full
-1. Append operation fails with IOException
-2. Node marked as DEAD in Metadata Service
-3. Controller triggers leader re-election (if leader)
-4. Partition becomes unavailable until resolved
+#### Test 3: Controller Failover
 
-### Corruption Detection
-1. CRC32 mismatch detected on read
-2. Log entry marked as corrupted
-3. Alert triggered for manual intervention
-4. Recovery from replicas or backups
+```bash
+# 1. Note current controller (e.g., Node 2)
+# 2. Kill controller (Ctrl+C)
+# 3. Monitor broker logs
 
-## Monitoring & Observability
+# Expected logs:
+❌ Heartbeat failed (Connection refused)
+📥 CONTROLLER_CHANGED received
+🔄 Controller switched to Node 3
+💓 Heartbeat sent to new controller
+✅ Heartbeat ACK received
+```
 
-### Metrics
-- Append throughput (msgs/sec, bytes/sec)
-- Fetch throughput (msgs/sec, bytes/sec)
-- Replication lag (time and offset per follower)
-- ISR size per partition
-- Segment roll frequency
-- Disk usage per partition
+#### Test 4: Metadata Synchronization
 
-### Logging
-- **DEBUG**: Record appends, fetches, replication events
-- **INFO**: Segment rolls, ISR changes, HWM updates
-- **WARN**: Replica lag warnings, slow replicas removed from ISR
-- **ERROR**: Append failures, replication failures, disk errors
+```bash
+# 1. Create topic while broker running
+curl -X POST http://localhost:9092/api/v1/metadata/topics \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topicName": "test-topic",
+    "numPartitions": 3,
+    "replicationFactor": 2
+  }'
 
-## Future Enhancements
+# 2. Check broker logs
 
-1. **Tiered Storage**: Move old segments to S3/object storage
-2. **Compaction**: Log compaction for change-data-capture topics
-3. **Compression**: Per-batch compression (Snappy, LZ4, Zstd)
-4. **Encryption**: At-rest encryption for sensitive data
-5. **Metrics Export**: Prometheus/Grafana integration
-6. **Rack Awareness**: Distribute replicas across racks for fault tolerance
+# Expected logs:
+🔄 Version mismatch: local=10, remote=11
+📥 Pulling latest metadata...
+✅ Metadata updated to version 11
+📊 Topics: test-topic (3 partitions)
+```
+
+---
 
 ## Troubleshooting
 
-### High Replication Lag
-```bash
-# Check replica status
-curl http://localhost:8082/api/storage/partitions/orders/0
+### Issue 1: Controller Discovery Fails
 
-# Check ISR
-# Should see in_sync_replica_count decreasing
+**Symptoms**:
+```bash
+❌ Failed to query all metadata nodes
+❌ Controller discovery failed
 ```
 
 **Causes**:
-- Network latency between nodes
-- Disk I/O bottleneck on follower
-- Follower node overloaded
+- Metadata cluster not running
+- Incorrect services.json configuration
+- Network connectivity issues
 
 **Solutions**:
-- Increase `replica-lag-time-max-ms`
-- Add more followers
-- Upgrade disk I/O (SSD)
+1. Verify metadata cluster is running:
+   ```bash
+   curl http://localhost:9091/api/v1/metadata/controller
+   ```
+2. Check services.json has correct URLs
+3. Verify network connectivity
 
-### Segment Files Growing Too Large
+---
+
+### Issue 2: Heartbeats Failing
+
+**Symptoms**:
 ```bash
-# Check segment size config
-cat application.yml | grep segment-size-bytes
+❌ Heartbeat failed (Connection refused)
+❌ Heartbeat failed (attempt 2/3)
 ```
 
-**Solution**:
-- Decrease `wal.segment-size-bytes`
-- Enable compression
-- Implement tiered storage
+**Causes**:
+- Controller not leader
+- Controller crashed
+- Network issues
 
-### Messages Not Visible to Consumers
+**Solutions**:
+1. Check controller logs for leader status
+2. Verify controller is running
+3. Wait for automatic rediscovery (after 3 failures)
+
+---
+
+### Issue 3: Metadata Not Syncing
+
+**Symptoms**:
 ```bash
-# Check HWM vs LEO
-curl http://localhost:8082/api/storage/partitions/orders/0
+⚠️ Metadata version mismatch persists
+❌ Failed to pull metadata
 ```
 
-**Cause**: HWM < LEO (replication lag)
+**Causes**:
+- Controller endpoint incorrect
+- Network timeout
+- Controller not responding
 
-**Solution**: Wait for followers to catch up, or check ISR membership
+**Solutions**:
+1. Verify controller URL in MetadataStore
+2. Increase timeout in RestTemplate configuration
+3. Check controller logs for errors
 
-## License
-Proprietary - Course Project
+---
+
+### Issue 4: Broker Not Registering
+
+**Symptoms**:
+```bash
+❌ Failed to register with controller
+❌ Registration rejected
+```
+
+**Causes**:
+- Duplicate broker ID
+- Controller not leader
+- Registration endpoint unavailable
+
+**Solutions**:
+1. Ensure unique broker ID
+2. Verify controller is leader
+3. Check controller logs for rejection reason
+
+---
+
+## Monitoring
+
+### Key Metrics to Monitor
+
+1. **Heartbeat Success Rate**: Should be ~100%
+2. **Controller Switches**: Should be rare (only on failures)
+3. **Metadata Refresh Count**: Low frequency expected
+4. **Consecutive Failures**: Should never reach 3 (triggers rediscovery)
+
+### Log Patterns
+
+**Healthy Broker**:
+```bash
+💓 [Broker 101] Sending heartbeat
+✅ [Broker 101] Heartbeat ACK received
+# Repeat every 5 seconds
+```
+
+**Failover in Progress**:
+```bash
+❌ Heartbeat failed (Connection refused)
+📥 CONTROLLER_CHANGED received
+🔄 Controller switched to Node 3
+✅ Heartbeat ACK received
+```
+
+**Metadata Refresh**:
+```bash
+🔄 Version mismatch: local=10, remote=15
+📥 Pulling latest metadata...
+✅ Metadata updated to version 15
+```
+
+---
+
+## Performance Tuning
+
+### Heartbeat Interval
+
+```yaml
+dmq:
+  storage:
+    heartbeat:
+      interval-ms: 5000  # Default: 5 seconds
+```
+
+- **Lower** (e.g., 3000): Faster failure detection, more network traffic
+- **Higher** (e.g., 10000): Less network traffic, slower failure detection
+
+### Metadata Refresh Interval
+
+```yaml
+dmq:
+  storage:
+    metadata:
+      refresh-interval-ms: 120000  # Default: 2 minutes
+```
+
+- **Lower** (e.g., 60000): More up-to-date metadata, more network traffic
+- **Higher** (e.g., 300000): Less network traffic, potential staleness
+
+### Discovery Timeout
+
+```java
+restTemplate.setConnectTimeout(2000);  // 2 seconds
+restTemplate.setReadTimeout(5000);     // 5 seconds
+```
+
+---
+
+## Best Practices
+
+1. **Unique Broker IDs**: Always use unique IDs (101, 102, 103...)
+2. **Monitor Heartbeats**: Set up alerts for consecutive failures
+3. **services.json Accuracy**: Keep metadata node URLs updated
+4. **Log Monitoring**: Watch for emoji indicators (❌, ⚠️)
+5. **Graceful Shutdown**: Stop broker cleanly (not kill -9)
+6. **Version Tracking**: Monitor metadata version in logs
+
+---
+
+## Related Documentation
+
+- [Project README](../README.md) - Overall project documentation
+- [Architecture Documentation](../ARCHITECTURE.md) - System architecture
+- [Metadata Service README](../dmq-metadata-service/README.md) - Controller documentation
+- [Testing Guide](../TESTING_GUIDE.md) - Comprehensive testing instructions
+
+---
+
+**Version**: 1.0.0  
+**Last Updated**: November 2024  
+**Status**: ✅ Operational

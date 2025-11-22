@@ -1,0 +1,152 @@
+package com.distributedmq.metadata.controller;
+
+import com.distributedmq.common.dto.ConsumerGroupResponse;
+import com.distributedmq.common.dto.FindGroupRequest;
+import com.distributedmq.metadata.service.ConsumerGroupService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+/**
+ * REST Controller for Consumer Group operations
+ * Handles minimal consumer group registry operations
+ */
+@Slf4j
+@RestController
+@RequestMapping("/api/v1/consumer-groups")
+@RequiredArgsConstructor
+public class ConsumerGroupController {
+
+    private final ConsumerGroupService consumerGroupService;
+
+    /**
+     * Find existing consumer group or create new one
+     * Called by consumers via bootstrap metadata service
+     * 
+     * POST /api/v1/consumer-groups/find-or-create
+     * Request: { "topic": "orders", "appId": "order-processor" }
+     * Response: { "groupId": "G_orders_order-processor", "groupLeaderUrl": "localhost:8081", ... }
+     */
+    @PostMapping("/find-or-create")
+    public ResponseEntity<ConsumerGroupResponse> findOrCreateGroup(@RequestBody FindGroupRequest request) {
+        log.info("Find or create consumer group request: topic={}, appId={}", request.getTopic(), request.getAppId());
+
+        try {
+            // Validate request
+            if (request.getTopic() == null || request.getTopic().trim().isEmpty()) {
+                return ResponseEntity.badRequest().build();
+            }
+            if (request.getAppId() == null || request.getAppId().trim().isEmpty()) {
+                return ResponseEntity.badRequest().build();
+            }
+
+            ConsumerGroupResponse response = consumerGroupService.findOrCreateGroup(
+                    request.getTopic(),
+                    request.getAppId()
+            );
+
+            log.info("Consumer group response: groupId={}, leader=broker-{}", 
+                     response.getGroupId(), response.getGroupLeaderBrokerId());
+
+            return ResponseEntity.ok(response);
+
+        } catch (IllegalStateException e) {
+            // Not the active controller
+            log.warn("Cannot process consumer group request: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+        } catch (Exception e) {
+            log.error("Error finding/creating consumer group", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Delete consumer group
+     * Called by group leader broker when the last member leaves
+     * 
+     * DELETE /api/v1/consumer-groups/{groupId}?brokerId=1
+     */
+    @DeleteMapping("/{groupId}")
+    public ResponseEntity<Void> deleteGroup(
+            @PathVariable String groupId,
+            @RequestParam Integer brokerId) {
+        
+        log.info("Delete consumer group request: groupId={}, requestingBroker={}", groupId, brokerId);
+
+        try {
+            consumerGroupService.deleteGroup(groupId, brokerId);
+            log.info("Consumer group {} deleted successfully", groupId);
+            return ResponseEntity.ok().build();
+
+        } catch (IllegalStateException e) {
+            // Not the active controller or not the group leader
+            log.warn("Cannot delete consumer group: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        } catch (IllegalArgumentException e) {
+            // Group not found
+            log.warn("Consumer group not found: {}", groupId);
+            return ResponseEntity.notFound().build();
+        } catch (Exception e) {
+            log.error("Error deleting consumer group: {}", groupId, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Reassign group leader to a new broker
+     * Called internally when a group leader broker fails
+     * 
+     * POST /api/v1/consumer-groups/{groupId}/reassign-leader?newLeaderBrokerId=2
+     */
+    @PostMapping("/{groupId}/reassign-leader")
+    public ResponseEntity<Void> reassignLeader(
+            @PathVariable String groupId,
+            @RequestParam Integer newLeaderBrokerId) {
+        
+        log.info("Reassign leader request: groupId={}, newLeader=broker-{}", groupId, newLeaderBrokerId);
+
+        try {
+            consumerGroupService.updateGroupLeader(groupId, newLeaderBrokerId);
+            log.info("Consumer group {} leader reassigned to broker-{}", groupId, newLeaderBrokerId);
+            return ResponseEntity.ok().build();
+
+        } catch (IllegalStateException e) {
+            // Not the active controller or broker not online
+            log.warn("Cannot reassign group leader: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+        } catch (IllegalArgumentException e) {
+            // Group not found or broker not found
+            log.warn("Cannot reassign group leader: {}", e.getMessage());
+            return ResponseEntity.badRequest().build();
+        } catch (Exception e) {
+            log.error("Error reassigning group leader for: {}", groupId, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Get consumer group information by group ID
+     * 
+     * GET /api/v1/consumer-groups/{groupId}
+     */
+    @GetMapping("/{groupId}")
+    public ResponseEntity<ConsumerGroupResponse> getGroup(@PathVariable String groupId) {
+        log.debug("Get consumer group request: groupId={}", groupId);
+
+        try {
+            ConsumerGroupResponse response = consumerGroupService.getGroupById(groupId);
+            
+            if (response == null) {
+                return ResponseEntity.notFound().build();
+            }
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            log.error("Error getting consumer group: {}", groupId, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+}
