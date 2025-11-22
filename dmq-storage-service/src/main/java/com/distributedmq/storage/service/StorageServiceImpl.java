@@ -292,30 +292,63 @@ public class StorageServiceImpl implements StorageService {
             long baseOffset = -1;
             
             synchronized (wal) {
-                for (ProduceRequest.ProduceMessage produceMessage : request.getMessages()) {
-                    Message message = Message.builder()
-                            .key(produceMessage.getKey())
-                            .value(produceMessage.getValue())
-                            .topic(request.getTopic())
-                            .partition(request.getPartition())
-                            .timestamp(produceMessage.getTimestamp() != null ? 
-                                     produceMessage.getTimestamp() : System.currentTimeMillis())
-                            .build();
-                    
-                    long offset = wal.append(message);
-                    message.setOffset(offset);
-                    
-                    if (baseOffset == -1) {
-                        baseOffset = offset;
+                if (config.getWal().getBatchWriteEnabled()) {
+                    // OPTIMIZED PATH: Atomic batch write
+                    List<Message> messages = new ArrayList<>();
+                    for (ProduceRequest.ProduceMessage produceMessage : request.getMessages()) {
+                        Message message = Message.builder()
+                                .key(produceMessage.getKey())
+                                .value(produceMessage.getValue())
+                                .topic(request.getTopic())
+                                .partition(request.getPartition())
+                                .timestamp(produceMessage.getTimestamp() != null ? 
+                                         produceMessage.getTimestamp() : System.currentTimeMillis())
+                                .build();
+                        messages.add(message);
                     }
                     
-                    results.add(ProduceResponse.ProduceResult.builder()
-                            .offset(offset)
-                            .timestamp(message.getTimestamp())
-                            .errorCode(ProduceResponse.ErrorCode.NONE)
-                            .build());
+                    // Write entire batch atomically
+                    List<Long> offsets = wal.appendBatch(messages);
+                    baseOffset = offsets.get(0);
                     
-                    log.debug("Replicated message at offset: {}", offset);
+                    // Build results
+                    for (int i = 0; i < messages.size(); i++) {
+                        results.add(ProduceResponse.ProduceResult.builder()
+                                .offset(offsets.get(i))
+                                .timestamp(messages.get(i).getTimestamp())
+                                .errorCode(ProduceResponse.ErrorCode.NONE)
+                                .build());
+                    }
+                    
+                    log.debug("Replicated batch of {} messages at offsets: {} to {} (optimized)", 
+                             messages.size(), offsets.get(0), offsets.get(offsets.size() - 1));
+                } else {
+                    // EXISTING PATH: Individual writes
+                    for (ProduceRequest.ProduceMessage produceMessage : request.getMessages()) {
+                        Message message = Message.builder()
+                                .key(produceMessage.getKey())
+                                .value(produceMessage.getValue())
+                                .topic(request.getTopic())
+                                .partition(request.getPartition())
+                                .timestamp(produceMessage.getTimestamp() != null ? 
+                                         produceMessage.getTimestamp() : System.currentTimeMillis())
+                                .build();
+                        
+                        long offset = wal.append(message);
+                        message.setOffset(offset);
+                        
+                        if (baseOffset == -1) {
+                            baseOffset = offset;
+                        }
+                        
+                        results.add(ProduceResponse.ProduceResult.builder()
+                                .offset(offset)
+                                .timestamp(message.getTimestamp())
+                                .errorCode(ProduceResponse.ErrorCode.NONE)
+                                .build());
+                        
+                        log.debug("Replicated message at offset: {}", offset);
+                    }
                 }
             }
             
@@ -446,30 +479,63 @@ public class StorageServiceImpl implements StorageService {
         long baseOffset = -1;
         
         synchronized (wal) {
-            for (ProduceRequest.ProduceMessage produceMessage : request.getMessages()) {
-                Message message = Message.builder()
-                        .key(produceMessage.getKey())
-                        .value(produceMessage.getValue())
-                        .topic(request.getTopic())
-                        .partition(request.getPartition())
-                        .timestamp(produceMessage.getTimestamp() != null ? 
-                                 produceMessage.getTimestamp() : System.currentTimeMillis())
-                        .build();
-                
-                long offset = wal.append(message);
-                message.setOffset(offset);
-                
-                if (baseOffset == -1) {
-                    baseOffset = offset;
+            if (config.getWal().getBatchWriteEnabled()) {
+                // OPTIMIZED PATH: Atomic batch write
+                List<Message> messages = new ArrayList<>();
+                for (ProduceRequest.ProduceMessage produceMessage : request.getMessages()) {
+                    Message message = Message.builder()
+                            .key(produceMessage.getKey())
+                            .value(produceMessage.getValue())
+                            .topic(request.getTopic())
+                            .partition(request.getPartition())
+                            .timestamp(produceMessage.getTimestamp() != null ? 
+                                     produceMessage.getTimestamp() : System.currentTimeMillis())
+                            .build();
+                    messages.add(message);
                 }
                 
-                results.add(ProduceResponse.ProduceResult.builder()
-                        .offset(offset)
-                        .timestamp(message.getTimestamp())
-                        .errorCode(ProduceResponse.ErrorCode.NONE)
-                        .build());
+                // Write entire batch atomically
+                List<Long> offsets = wal.appendBatch(messages);
+                baseOffset = offsets.get(0);
                 
-                log.debug("Message appended at offset: {} (acks=0)", offset);
+                // Build results
+                for (int i = 0; i < messages.size(); i++) {
+                    results.add(ProduceResponse.ProduceResult.builder()
+                            .offset(offsets.get(i))
+                            .timestamp(messages.get(i).getTimestamp())
+                            .errorCode(ProduceResponse.ErrorCode.NONE)
+                            .build());
+                }
+                
+                log.debug("Batch appended {} messages at offsets: {} to {} (acks=0, optimized)", 
+                         messages.size(), offsets.get(0), offsets.get(offsets.size() - 1));
+            } else {
+                // EXISTING PATH: Individual writes
+                for (ProduceRequest.ProduceMessage produceMessage : request.getMessages()) {
+                    Message message = Message.builder()
+                            .key(produceMessage.getKey())
+                            .value(produceMessage.getValue())
+                            .topic(request.getTopic())
+                            .partition(request.getPartition())
+                            .timestamp(produceMessage.getTimestamp() != null ? 
+                                     produceMessage.getTimestamp() : System.currentTimeMillis())
+                            .build();
+                    
+                    long offset = wal.append(message);
+                    message.setOffset(offset);
+                    
+                    if (baseOffset == -1) {
+                        baseOffset = offset;
+                    }
+                    
+                    results.add(ProduceResponse.ProduceResult.builder()
+                            .offset(offset)
+                            .timestamp(message.getTimestamp())
+                            .errorCode(ProduceResponse.ErrorCode.NONE)
+                            .build());
+                    
+                    log.debug("Message appended at offset: {} (acks=0)", offset);
+                }
             }
         }
         
@@ -522,30 +588,63 @@ public class StorageServiceImpl implements StorageService {
         long baseOffset = -1;
         
         synchronized (wal) {
-            for (ProduceRequest.ProduceMessage produceMessage : request.getMessages()) {
-                Message message = Message.builder()
-                        .key(produceMessage.getKey())
-                        .value(produceMessage.getValue())
-                        .topic(request.getTopic())
-                        .partition(request.getPartition())
-                        .timestamp(produceMessage.getTimestamp() != null ? 
-                                 produceMessage.getTimestamp() : System.currentTimeMillis())
-                        .build();
-                
-                long offset = wal.append(message);
-                message.setOffset(offset);
-                
-                if (baseOffset == -1) {
-                    baseOffset = offset;
+            if (config.getWal().getBatchWriteEnabled()) {
+                // OPTIMIZED PATH: Atomic batch write
+                List<Message> messages = new ArrayList<>();
+                for (ProduceRequest.ProduceMessage produceMessage : request.getMessages()) {
+                    Message message = Message.builder()
+                            .key(produceMessage.getKey())
+                            .value(produceMessage.getValue())
+                            .topic(request.getTopic())
+                            .partition(request.getPartition())
+                            .timestamp(produceMessage.getTimestamp() != null ? 
+                                     produceMessage.getTimestamp() : System.currentTimeMillis())
+                            .build();
+                    messages.add(message);
                 }
                 
-                results.add(ProduceResponse.ProduceResult.builder()
-                        .offset(offset)
-                        .timestamp(message.getTimestamp())
-                        .errorCode(ProduceResponse.ErrorCode.NONE)
-                        .build());
+                // Write entire batch atomically
+                List<Long> offsets = wal.appendBatch(messages);
+                baseOffset = offsets.get(0);
                 
-                log.debug("Message appended at offset: {} (acks=1)", offset);
+                // Build results
+                for (int i = 0; i < messages.size(); i++) {
+                    results.add(ProduceResponse.ProduceResult.builder()
+                            .offset(offsets.get(i))
+                            .timestamp(messages.get(i).getTimestamp())
+                            .errorCode(ProduceResponse.ErrorCode.NONE)
+                            .build());
+                }
+                
+                log.debug("Batch appended {} messages at offsets: {} to {} (acks=1, optimized)", 
+                         messages.size(), offsets.get(0), offsets.get(offsets.size() - 1));
+            } else {
+                // EXISTING PATH: Individual writes
+                for (ProduceRequest.ProduceMessage produceMessage : request.getMessages()) {
+                    Message message = Message.builder()
+                            .key(produceMessage.getKey())
+                            .value(produceMessage.getValue())
+                            .topic(request.getTopic())
+                            .partition(request.getPartition())
+                            .timestamp(produceMessage.getTimestamp() != null ? 
+                                     produceMessage.getTimestamp() : System.currentTimeMillis())
+                            .build();
+                    
+                    long offset = wal.append(message);
+                    message.setOffset(offset);
+                    
+                    if (baseOffset == -1) {
+                        baseOffset = offset;
+                    }
+                    
+                    results.add(ProduceResponse.ProduceResult.builder()
+                            .offset(offset)
+                            .timestamp(message.getTimestamp())
+                            .errorCode(ProduceResponse.ErrorCode.NONE)
+                            .build());
+                    
+                    log.debug("Message appended at offset: {} (acks=1)", offset);
+                }
             }
         }
         
@@ -602,30 +701,63 @@ public class StorageServiceImpl implements StorageService {
         long baseOffset = -1;
         
         synchronized (wal) {
-            for (ProduceRequest.ProduceMessage produceMessage : request.getMessages()) {
-                Message message = Message.builder()
-                        .key(produceMessage.getKey())
-                        .value(produceMessage.getValue())
-                        .topic(request.getTopic())
-                        .partition(request.getPartition())
-                        .timestamp(produceMessage.getTimestamp() != null ? 
-                                 produceMessage.getTimestamp() : System.currentTimeMillis())
-                        .build();
-                
-                long offset = wal.append(message);
-                message.setOffset(offset);
-                
-                if (baseOffset == -1) {
-                    baseOffset = offset;
+            if (config.getWal().getBatchWriteEnabled()) {
+                // OPTIMIZED PATH: Atomic batch write
+                List<Message> messages = new ArrayList<>();
+                for (ProduceRequest.ProduceMessage produceMessage : request.getMessages()) {
+                    Message message = Message.builder()
+                            .key(produceMessage.getKey())
+                            .value(produceMessage.getValue())
+                            .topic(request.getTopic())
+                            .partition(request.getPartition())
+                            .timestamp(produceMessage.getTimestamp() != null ? 
+                                     produceMessage.getTimestamp() : System.currentTimeMillis())
+                            .build();
+                    messages.add(message);
                 }
                 
-                results.add(ProduceResponse.ProduceResult.builder()
-                        .offset(offset)
-                        .timestamp(message.getTimestamp())
-                        .errorCode(ProduceResponse.ErrorCode.NONE)
-                        .build());
+                // Write entire batch atomically
+                List<Long> offsets = wal.appendBatch(messages);
+                baseOffset = offsets.get(0);
                 
-                log.debug("Message appended at offset: {} (acks=-1)", offset);
+                // Build results
+                for (int i = 0; i < messages.size(); i++) {
+                    results.add(ProduceResponse.ProduceResult.builder()
+                            .offset(offsets.get(i))
+                            .timestamp(messages.get(i).getTimestamp())
+                            .errorCode(ProduceResponse.ErrorCode.NONE)
+                            .build());
+                }
+                
+                log.debug("Batch appended {} messages at offsets: {} to {} (acks=-1, optimized)", 
+                         messages.size(), offsets.get(0), offsets.get(offsets.size() - 1));
+            } else {
+                // EXISTING PATH: Individual writes
+                for (ProduceRequest.ProduceMessage produceMessage : request.getMessages()) {
+                    Message message = Message.builder()
+                            .key(produceMessage.getKey())
+                            .value(produceMessage.getValue())
+                            .topic(request.getTopic())
+                            .partition(request.getPartition())
+                            .timestamp(produceMessage.getTimestamp() != null ? 
+                                     produceMessage.getTimestamp() : System.currentTimeMillis())
+                            .build();
+                    
+                    long offset = wal.append(message);
+                    message.setOffset(offset);
+                    
+                    if (baseOffset == -1) {
+                        baseOffset = offset;
+                    }
+                    
+                    results.add(ProduceResponse.ProduceResult.builder()
+                            .offset(offset)
+                            .timestamp(message.getTimestamp())
+                            .errorCode(ProduceResponse.ErrorCode.NONE)
+                            .build());
+                    
+                    log.debug("Message appended at offset: {} (acks=-1)", offset);
+                }
             }
         }
         

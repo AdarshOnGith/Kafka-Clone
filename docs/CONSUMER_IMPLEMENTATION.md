@@ -454,6 +454,34 @@ public ConsumerRecords poll(Duration timeout) {
 }
 ```
 
+### Impact of Atomic Batch WAL Writes
+
+**New Optimization (November 2025)**: Producer writes are now atomic batch operations when `batch-write-enabled: true` in broker configuration.
+
+**Consumer Impact**: ✅ **NONE** - Consumers are completely unaffected
+
+**Why No Changes?**
+1. **Same File Format**: Batch writes produce identical on-disk format
+2. **Sequential Offsets**: Messages still have consecutive offsets
+3. **HWM Semantics**: High Water Mark behavior unchanged
+4. **Read Path**: `WAL.read()` handles batched writes identically
+
+**Consumer Reads Batch-Written Messages**:
+```
+Producer writes batch of 10 messages atomically:
+  - Single I/O operation on broker
+  - Messages get offsets 100-109
+  - Stored with same format as individual writes
+
+Consumer reads messages:
+  - consumer.poll() reads offsets 100-109
+  - No awareness of how they were written
+  - Same sequential iteration
+  - No performance difference for reads
+```
+
+**Performance**: Consumers actually benefit from faster producer writes (higher message availability)
+
 ---
 
 ## Offset Management

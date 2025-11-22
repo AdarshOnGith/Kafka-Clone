@@ -84,6 +84,80 @@ public class LogSegment implements AutoCloseable {
     }
 
     /**
+     * Append batch of messages atomically to segment
+     * 
+     * Optimization: Pre-serializes all messages and writes in single I/O operation
+     * This reduces system calls and improves throughput significantly
+     */
+    public void appendBatch(List<Message> messages) throws IOException {
+        if (messages == null || messages.isEmpty()) {
+            return;
+        }
+        
+        rwLock.writeLock().lock();
+        try {
+            // Track starting position for indexing
+            long startPosition = currentSize;
+            
+            // Step 1: Pre-serialize all messages and calculate checksums
+            List<byte[]> serializedMessages = new ArrayList<>(messages.size());
+            List<Integer> checksums = new ArrayList<>(messages.size());
+            int totalBatchSize = 0;
+            
+            for (Message message : messages) {
+                byte[] serialized = serializeMessage(message);
+                
+                CRC32 crc = new CRC32();
+                crc.update(serialized);
+                int checksum = (int) crc.getValue();
+                
+                serializedMessages.add(serialized);
+                checksums.add(checksum);
+                
+                // Calculate size: size_field + crc_field + message_data
+                totalBatchSize += Integer.BYTES + Integer.BYTES + serialized.length;
+            }
+            
+            // Step 2: Allocate buffer for entire batch
+            ByteArrayOutputStream batchBuffer = new ByteArrayOutputStream(totalBatchSize);
+            DataOutputStream batchStream = new DataOutputStream(batchBuffer);
+            
+            // Step 3: Write all messages to buffer
+            for (int i = 0; i < messages.size(); i++) {
+                byte[] serialized = serializedMessages.get(i);
+                int checksum = checksums.get(i);
+                
+                batchStream.writeInt(serialized.length + 4); // size includes CRC
+                batchStream.writeInt(checksum);
+                batchStream.write(serialized);
+            }
+            
+            // Step 4: Single write operation to disk (atomic)
+            byte[] batchData = batchBuffer.toByteArray();
+            dataOutputStream.write(batchData);
+            
+            // Step 5: Update segment state
+            currentSize += batchData.length;
+            lastOffset = messages.get(messages.size() - 1).getOffset();
+            
+            // Step 6: Index all messages for fast lookups
+            long position = startPosition;
+            for (int i = 0; i < messages.size(); i++) {
+                Message message = messages.get(i);
+                int messageSize = Integer.BYTES + Integer.BYTES + serializedMessages.get(i).length;
+                index.indexMessage(message.getOffset(), position, messageSize);
+                position += messageSize;
+            }
+            
+            log.debug("Batch appended {} messages to segment {} (total {} bytes)", 
+                     messages.size(), baseOffset, batchData.length);
+            
+        } finally {
+            rwLock.writeLock().unlock();
+        }
+    }
+
+    /**
      * Flush to disk
      */
     public void flush() throws IOException {

@@ -310,6 +310,69 @@ public class WriteAheadLog implements AutoCloseable {
     }
 
     /**
+     * Append batch of messages atomically to log
+     * Returns list of assigned offsets
+     * 
+     * Optimization: Writes all messages in single I/O operation for better throughput
+     * Assumption: Batch fits in current segment (no segment splits during batch)
+     */
+    public List<Long> appendBatch(List<Message> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return new ArrayList<>();
+        }
+        
+        synchronized (this) {
+            List<Long> offsets = new ArrayList<>(messages.size());
+            
+            try {
+                // Step 1: Assign offsets to all messages atomically
+                for (Message message : messages) {
+                    long offset = nextOffset.getAndIncrement();
+                    message.setOffset(offset);
+                    offsets.add(offset);
+                }
+                
+                long firstOffset = offsets.get(0);
+                long lastOffset = offsets.get(offsets.size() - 1);
+                
+                // Step 2: Check if we need to roll to new segment
+                // Note: We check before writing. If batch doesn't fit, we still proceed
+                // assuming batch is smaller than segment size (validated by max messages limit)
+                if (currentSegment != null && currentSegment.size() >= config.getWal().getSegmentSizeBytes()) {
+                    rollToNewSegment();
+                }
+                
+                // Step 3: Create new segment if this is the first batch
+                if (currentSegment == null) {
+                    currentSegment = new LogSegment(logDirectory, firstOffset);
+                    segmentsLock.writeLock().lock();
+                    try {
+                        allSegments.add(currentSegment);
+                        offsetToSegmentMap.put(firstOffset, currentSegment);
+                    } finally {
+                        segmentsLock.writeLock().unlock();
+                    }
+                }
+                
+                // Step 4: Write entire batch atomically
+                currentSegment.appendBatch(messages);
+                
+                // Step 5: Update Log End Offset (LEO) to point after last message
+                logEndOffset.set(lastOffset + 1);
+                
+                log.debug("Appended batch of {} messages, offsets: {} to {}", 
+                         messages.size(), firstOffset, lastOffset);
+                
+                return offsets;
+                
+            } catch (IOException e) {
+                log.error("Failed to append batch of {} messages", messages.size(), e);
+                throw new RuntimeException("Failed to append batch", e);
+            }
+        }
+    }
+
+    /**
      * Read messages starting from offset with multi-segment support
      * TODO: Add isolation level support (read_committed vs read_uncommitted)
      * Currently only supports read_committed (filters by HWM)
