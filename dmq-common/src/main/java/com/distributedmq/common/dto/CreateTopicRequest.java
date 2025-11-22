@@ -6,7 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * Request to create a new topic
+ * Request DTO for creating a topic
  */
 @Data
 @Builder
@@ -14,18 +14,13 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class CreateTopicRequest {
     
-    /**
-     * Topic name
-     */
     private String topicName;
-    
-    /**
-     * Number of partitions
-     */
     private Integer partitionCount;
-    
-    /**
-     * Replication factor
-     */
     private Integer replicationFactor;
+    
+    private Long retentionMs;
+    private Long retentionBytes;
+    private Integer segmentBytes;
+    private String compressionType;
+    private Integer minInsyncReplicas;
 }
