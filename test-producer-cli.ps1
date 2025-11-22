@@ -74,11 +74,22 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Test Suite 2: Topic Creation" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Use existing topic from previous successful test instead of creating new one
-$testTopic = "cli-test-topic-1122163448-p5-rf2"
+# Generate unique topic name
+$timestamp = (Get-Date).ToString("MMddHHmmss")
+$testTopic = "cli-test-topic-$timestamp-p5-rf2"
 
-Write-Host "[Info] Using topic: $testTopic" -ForegroundColor Gray
-Write-Host "[Info] Assuming services are already running" -ForegroundColor Gray
+Write-Host "[Info] Creating test topic: $testTopic" -ForegroundColor Yellow
+
+# Create topic first
+$createOutput = & java -jar $cliJar create-topic --name $testTopic --partitions 5 --replication-factor 2 2>&1
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "??? Topic created successfully" -ForegroundColor Green
+    $testsPassed++
+} else {
+    Write-Host "??? Topic creation failed: $createOutput" -ForegroundColor Red
+    Write-Host "Continuing with tests assuming topic exists..." -ForegroundColor Yellow
+    $testsFailed++
+}
 
 Write-Host ""
 
