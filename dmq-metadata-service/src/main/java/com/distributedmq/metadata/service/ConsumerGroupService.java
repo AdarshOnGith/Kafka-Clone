@@ -43,4 +43,11 @@ public interface ConsumerGroupService {
      * @return Consumer group information or null if not found
      */
     ConsumerGroupResponse getGroupById(String groupId);
+    
+    /**
+     * Get all consumer groups
+     * 
+     * @return List of all consumer groups
+     */
+    java.util.List<ConsumerGroupResponse> getAllGroups();
 }

@@ -183,6 +183,13 @@ public class ConsumerGroupServiceImpl implements ConsumerGroupService {
         return buildResponse(groupInfo);
     }
 
+    @Override
+    public List<ConsumerGroupResponse> getAllGroups() {
+        return metadataStateMachine.getAllConsumerGroups().values().stream()
+                .map(this::buildResponse)
+                .collect(Collectors.toList());
+    }
+
     /**
      * Select a broker to act as group leader
      * Strategy: Round-robin or least-loaded broker selection

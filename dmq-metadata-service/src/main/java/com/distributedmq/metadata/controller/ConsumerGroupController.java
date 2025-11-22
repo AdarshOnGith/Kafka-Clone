@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.*;
  */
 @Slf4j
 @RestController
-@RequestMapping("/api/v1/consumer-groups")
+@RequestMapping("/api/v1/metadata/consumer-groups")
 @RequiredArgsConstructor
 public class ConsumerGroupController {
 
@@ -25,7 +25,7 @@ public class ConsumerGroupController {
      * Find existing consumer group or create new one
      * Called by consumers via bootstrap metadata service
      * 
-     * POST /api/v1/consumer-groups/find-or-create
+     * POST /api/v1/metadata/consumer-groups/find-or-create
      * Request: { "topic": "orders", "appId": "order-processor" }
      * Response: { "groupId": "G_orders_order-processor", "groupLeaderUrl": "localhost:8081", ... }
      */
@@ -66,7 +66,7 @@ public class ConsumerGroupController {
      * Delete consumer group
      * Called by group leader broker when the last member leaves
      * 
-     * DELETE /api/v1/consumer-groups/{groupId}?brokerId=1
+     * DELETE /api/v1/metadata/consumer-groups/{groupId}?brokerId=1
      */
     @DeleteMapping("/{groupId}")
     public ResponseEntity<Void> deleteGroup(
@@ -98,7 +98,7 @@ public class ConsumerGroupController {
      * Reassign group leader to a new broker
      * Called internally when a group leader broker fails
      * 
-     * POST /api/v1/consumer-groups/{groupId}/reassign-leader?newLeaderBrokerId=2
+     * POST /api/v1/metadata/consumer-groups/{groupId}/reassign-leader?newLeaderBrokerId=2
      */
     @PostMapping("/{groupId}/reassign-leader")
     public ResponseEntity<Void> reassignLeader(
@@ -129,7 +129,7 @@ public class ConsumerGroupController {
     /**
      * Get consumer group information by group ID
      * 
-     * GET /api/v1/consumer-groups/{groupId}
+     * GET /api/v1/metadata/consumer-groups/{groupId}
      */
     @GetMapping("/{groupId}")
     public ResponseEntity<ConsumerGroupResponse> getGroup(@PathVariable String groupId) {
@@ -146,6 +146,25 @@ public class ConsumerGroupController {
 
         } catch (Exception e) {
             log.error("Error getting consumer group: {}", groupId, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * List all consumer groups
+     * 
+     * GET /api/v1/metadata/consumer-groups
+     */
+    @GetMapping
+    public ResponseEntity<java.util.List<ConsumerGroupResponse>> listGroups() {
+        log.debug("List all consumer groups request");
+
+        try {
+            java.util.List<ConsumerGroupResponse> groups = consumerGroupService.getAllGroups();
+            return ResponseEntity.ok(groups);
+
+        } catch (Exception e) {
+            log.error("Error listing consumer groups", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
