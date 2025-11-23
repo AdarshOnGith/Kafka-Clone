@@ -361,6 +361,14 @@ public class DMQGuiClient extends JFrame {
         describeTopicBtn.addActionListener(e -> describeTopic());
         buttonPanel.add(describeTopicBtn);
         
+        JButton deleteTopicBtn = new JButton("Delete Topic");
+        deleteTopicBtn.addActionListener(e -> deleteTopic());
+        buttonPanel.add(deleteTopicBtn);
+        
+        JButton listBrokersBtn = new JButton("List Brokers");
+        listBrokersBtn.addActionListener(e -> listBrokers());
+        buttonPanel.add(listBrokersBtn);
+        
         panel.add(buttonPanel, BorderLayout.SOUTH);
         
         return panel;
@@ -582,6 +590,67 @@ public class DMQGuiClient extends JFrame {
         
         // Use CLI command
         executeCliCommand("describe-topic --name " + name);
+    }
+    
+    private void deleteTopic() {
+        String name = topicName.getText().trim();
+        
+        if (name.isEmpty()) {
+            showError("Topic name is required!");
+            return;
+        }
+        
+        // Confirm deletion
+        int result = JOptionPane.showConfirmDialog(
+            this,
+            "Are you sure you want to delete topic '" + name + "'?\nThis action cannot be undone.",
+            "Confirm Delete Topic",
+            JOptionPane.YES_NO_OPTION,
+            JOptionPane.WARNING_MESSAGE
+        );
+        
+        if (result != JOptionPane.YES_OPTION) {
+            displayResult("Delete operation cancelled", false, 0);
+            return;
+        }
+        
+        // Use CLI command - but we need to bypass the confirmation prompt
+        // We'll handle this by providing "yes" as input
+        displayCommandOutput("Deleting topic...", "delete-topic --name " + name);
+        
+        CompletableFuture.runAsync(() -> {
+            try {
+                ProcessBuilder pb = new ProcessBuilder("java", "-jar", CLI_JAR, "delete-topic", "--name", name);
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                
+                // Send "yes" to confirm deletion
+                try (java.io.PrintWriter writer = new java.io.PrintWriter(process.getOutputStream())) {
+                    writer.println("yes");
+                    writer.flush();
+                }
+                
+                BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                StringBuilder output = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+                
+                int exitCode = process.waitFor();
+                String deleteResult = output.toString();
+                
+                SwingUtilities.invokeLater(() -> displayResult(deleteResult, exitCode == 0, exitCode));
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> displayError("Error deleting topic: " + e.getMessage()));
+            }
+        });
+    }
+    
+    private void listBrokers() {
+        String metadataUrl = metadataServiceUrl.getText().trim();
+        // Use CLI command with metadata URL
+        executeCliCommand("list-brokers --metadata-url " + metadataUrl);
     }
     
     private void listConsumerGroups() {

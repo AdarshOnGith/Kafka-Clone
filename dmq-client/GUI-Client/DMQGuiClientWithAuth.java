@@ -412,9 +412,229 @@ public class DMQGuiClientWithAuth extends JFrame {
     //  produceSingleMessage, produceBatchMessages, consumeMessages, etc.)
     // Since CLI now handles JWT automatically via TokenManager, no changes needed to command execution
     
-    // Include all remaining methods from original DMQGuiClient.java here...
-    // For brevity, I'll note that the executeCliCommand methods remain unchanged
-    // as they now automatically use the stored JWT token via TokenManager
+    // Create Topic Panel with all buttons
+    private JPanel createTopicPanel() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBorder(new EmptyBorder(10, 10, 10, 10));
+        
+        // Form Panel
+        JPanel formPanel = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        
+        // Topic Name
+        gbc.gridx = 0; gbc.gridy = 0;
+        formPanel.add(new JLabel("Topic Name:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        topicName = new JTextField(20);
+        formPanel.add(topicName, gbc);
+        
+        // Partitions
+        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0;
+        formPanel.add(new JLabel("Partitions:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        topicPartitions = new JTextField("3", 20);
+        formPanel.add(topicPartitions, gbc);
+        
+        // Replication Factor
+        gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0.0;
+        formPanel.add(new JLabel("Replication Factor:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        topicReplication = new JTextField("2", 20);
+        formPanel.add(topicReplication, gbc);
+        
+        panel.add(formPanel, BorderLayout.CENTER);
+        
+        // Button Panel
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        
+        createTopicBtn = new JButton("Create Topic");
+        createTopicBtn.addActionListener(e -> createTopic());
+        buttonPanel.add(createTopicBtn);
+        
+        listTopicsBtn = new JButton("List Topics");
+        listTopicsBtn.addActionListener(e -> listTopics());
+        buttonPanel.add(listTopicsBtn);
+        
+        describeTopicBtn = new JButton("Describe Topic");
+        describeTopicBtn.addActionListener(e -> describeTopic());
+        buttonPanel.add(describeTopicBtn);
+        
+        JButton deleteTopicBtn = new JButton("Delete Topic");
+        deleteTopicBtn.addActionListener(e -> deleteTopic());
+        buttonPanel.add(deleteTopicBtn);
+        
+        JButton listBrokersBtn = new JButton("List Brokers");
+        listBrokersBtn.addActionListener(e -> listBrokers());
+        buttonPanel.add(listBrokersBtn);
+        
+        panel.add(buttonPanel, BorderLayout.SOUTH);
+        
+        return panel;
+    }
+    
+    private void createTopic() {
+        String name = topicName.getText().trim();
+        String partitions = topicPartitions.getText().trim();
+        String replication = topicReplication.getText().trim();
+        
+        if (name.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Topic name is required!", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        
+        executeCliCommand("create-topic --name " + name + " --partitions " + partitions + " --replication-factor " + replication);
+    }
+    
+    private void listTopics() {
+        String metadataUrl = metadataServiceUrl.getText().trim();
+        executeCliCommand("list-topics --metadata-url " + metadataUrl);
+    }
+    
+    private void describeTopic() {
+        String name = topicName.getText().trim();
+        
+        if (name.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Topic name is required!", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        
+        executeCliCommand("describe-topic --name " + name);
+    }
+    
+    private void deleteTopic() {
+        String name = topicName.getText().trim();
+        
+        if (name.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Topic name is required!", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        
+        // Confirm deletion
+        int result = JOptionPane.showConfirmDialog(
+            this,
+            "Are you sure you want to delete topic '" + name + "'?\nThis action cannot be undone.",
+            "Confirm Delete Topic",
+            JOptionPane.YES_NO_OPTION,
+            JOptionPane.WARNING_MESSAGE
+        );
+        
+        if (result != JOptionPane.YES_OPTION) {
+            displayResult("Delete operation cancelled", false, 0);
+            return;
+        }
+        
+        // Use CLI command - provide "yes" as input
+        displayCommandOutput("Deleting topic...", "delete-topic --name " + name);
+        
+        CompletableFuture.runAsync(() -> {
+            try {
+                ProcessBuilder pb = new ProcessBuilder("java", "-jar", CLI_JAR, "delete-topic", "--name", name);
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                
+                // Send "yes" to confirm deletion
+                try (java.io.PrintWriter writer = new java.io.PrintWriter(process.getOutputStream())) {
+                    writer.println("yes");
+                    writer.flush();
+                }
+                
+                BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                StringBuilder output = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+                
+                int exitCode = process.waitFor();
+                String deleteResult = output.toString();
+                
+                SwingUtilities.invokeLater(() -> displayResult(deleteResult, exitCode == 0, exitCode));
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> displayError("Error deleting topic: " + e.getMessage()));
+            }
+        });
+    }
+    
+    private void listBrokers() {
+        String metadataUrl = metadataServiceUrl.getText().trim();
+        executeCliCommand("list-brokers --metadata-url " + metadataUrl);
+    }
+    
+    private void getRaftLeader() {
+        String metadataUrl = metadataServiceUrl.getText().trim();
+        executeCliCommand("get-leader --metadata-url " + metadataUrl);
+    }
+    
+    private void executeCliCommand(String cmd) {
+        displayCommandOutput("Executing command...", cmd);
+        
+        CompletableFuture.runAsync(() -> {
+            try {
+                ProcessBuilder pb = new ProcessBuilder("java", "-jar", CLI_JAR);
+                String[] args = parseCommandLine(cmd);
+                for (String arg : args) {
+                    pb.command().add(arg);
+                }
+                
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                
+                BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                StringBuilder output = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+                
+                int exitCode = process.waitFor();
+                String result = output.toString();
+                
+                SwingUtilities.invokeLater(() -> displayResult(result, exitCode == 0, exitCode));
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> displayError("Error executing command: " + e.getMessage()));
+            }
+        });
+    }
+    
+    private void displayCommandOutput(String desc, String cmd) {
+        outputArea.append("========================================\n");
+        outputArea.append(desc + "\n");
+        outputArea.append("Command: " + cmd + "\n");
+        outputArea.append("========================================\n");
+    }
+    
+    private void displayResult(String result, boolean success, int code) {
+        outputArea.append(result);
+        outputArea.append("\n");
+        if (success) {
+            outputArea.append("[Exit Code: " + code + " - SUCCESS]\n");
+        } else {
+            outputArea.append("[Exit Code: " + code + " - FAILED]\n");
+        }
+        outputArea.append("\n");
+        outputArea.setCaretPosition(outputArea.getDocument().getLength());
+    }
+    
+    private void displayError(String error) {
+        outputArea.append("[ERROR] " + error + "\n\n");
+        outputArea.setCaretPosition(outputArea.getDocument().getLength());
+    }
+    
+    private String[] parseCommandLine(String command) {
+        java.util.List<String> args = new java.util.ArrayList<>();
+        java.util.regex.Matcher m = Pattern.compile("([^\"]\\S*|\".+?\")\\s*").matcher(command);
+        while (m.find()) {
+            args.add(m.group(1).replace("\"", ""));
+        }
+        return args.toArray(new String[0]);
+    }
+    
+    // Placeholder methods for other panels
+    private JPanel createProducerPanel() { return new JPanel(); }
+    private JPanel createConsumerPanel() { return new JPanel(); }
+    private JPanel createConsumerGroupsPanel() { return new JPanel(); }
     
     public static void main(String[] args) {
         try {
@@ -425,16 +645,4 @@ public class DMQGuiClientWithAuth extends JFrame {
         
         SwingUtilities.invokeLater(() -> new DMQGuiClientWithAuth());
     }
-    
-    // Placeholder methods - in real implementation, copy all methods from original DMQGuiClient.java
-    private JPanel createProducerPanel() { return new JPanel(); }
-    private JPanel createConsumerPanel() { return new JPanel(); }
-    private JPanel createTopicPanel() { return new JPanel(); }
-    private JPanel createConsumerGroupsPanel() { return new JPanel(); }
-    private void getRaftLeader() {}
-    private void executeCliCommand(String cmd) {}
-    private void displayCommandOutput(String desc, String cmd) {}
-    private void displayResult(String result, boolean success, int code) {}
-    private void displayError(String error) {}
-    private String[] parseCommandLine(String command) { return new String[0]; }
 }

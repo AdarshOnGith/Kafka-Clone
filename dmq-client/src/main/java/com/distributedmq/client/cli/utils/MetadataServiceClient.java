@@ -233,4 +233,68 @@ public class MetadataServiceClient {
         
         return objectMapper.readValue(response.body(), ConsumerGroupResponse.class);
     }
+    
+    /**
+     * Delete a topic
+     */
+    public void deleteTopic(String topicName) throws Exception {
+        String url = controllerUrl + "/api/v1/metadata/topics/" + topicName;
+        
+        HttpRequest request = createRequestBuilder(url)
+                .DELETE()
+                .build();
+        
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        
+        // Handle 401 - Unauthorized
+        if (response.statusCode() == 401) {
+            throw new RuntimeException("Authentication required. Please login first: mycli login --username <user>");
+        }
+        
+        // Handle 403 - Forbidden (need ADMIN role)
+        if (response.statusCode() == 403) {
+            throw new RuntimeException("Admin role required to delete topics");
+        }
+        
+        // Handle 503 - Not the leader, retry with actual leader
+        if (response.statusCode() == 503) {
+            String leaderHeader = response.headers().firstValue("X-Controller-Leader").orElse(null);
+            if (leaderHeader != null) {
+                // Re-discover controller and retry
+                System.out.println("⚠️  Node is not the leader. Discovering actual leader...");
+                this.controllerUrl = discoverController();
+                // Retry the request
+                deleteTopic(topicName);
+                return;
+            }
+        }
+        
+        // Handle 404 - Topic not found
+        if (response.statusCode() == 404) {
+            throw new RuntimeException("Topic '" + topicName + "' not found");
+        }
+        
+        if (response.statusCode() != 204 && response.statusCode() != 200) {
+            throw new RuntimeException("Failed to delete topic: HTTP " + response.statusCode() + " - " + response.body());
+        }
+    }
+    
+    /**
+     * List all brokers
+     */
+    public String listBrokers() throws Exception {
+        String url = controllerUrl + "/api/v1/metadata/brokers";
+        
+        HttpRequest request = createRequestBuilder(url)
+                .GET()
+                .build();
+        
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("Failed to list brokers: HTTP " + response.statusCode());
+        }
+        
+        return response.body();
+    }
 }

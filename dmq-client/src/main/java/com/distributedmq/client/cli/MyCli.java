@@ -61,6 +61,10 @@ public class MyCli {
                 return new ListTopicsCommand();
             case "describe-topic":
                 return new DescribeTopicCommand();
+            case "delete-topic":
+                return new DeleteTopicCommand();
+            case "list-brokers":
+                return new ListBrokersCommand();
             case "get-leader":
                 return new GetLeaderCommand();
             case "produce":
@@ -106,9 +110,11 @@ public class MyCli {
         System.out.println("  create-topic       Create a new topic");
         System.out.println("  list-topics        List all topics");
         System.out.println("  describe-topic     Describe a specific topic");
+        System.out.println("  delete-topic       Delete a topic (ADMIN only)");
         System.out.println();
         System.out.println("Cluster Management:");
         System.out.println("  get-leader         Get Raft leader information");
+        System.out.println("  list-brokers       List all registered brokers");
         System.out.println();
         System.out.println("Producer Commands:");
         System.out.println("  produce            Produce messages to a topic");
@@ -131,6 +137,12 @@ public class MyCli {
         System.out.println();
         System.out.println("  # Create a topic");
         System.out.println("  mycli create-topic --name orders --partitions 3 --replication-factor 2");
+        System.out.println();
+        System.out.println("  # List brokers");
+        System.out.println("  mycli list-brokers");
+        System.out.println();
+        System.out.println("  # Delete a topic");
+        System.out.println("  mycli delete-topic --name orders");
         System.out.println();
         System.out.println("  # Produce a message");
         System.out.println("  mycli produce --topic orders --key order-123 --value \"Order data\"");
