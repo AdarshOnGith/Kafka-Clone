@@ -8,7 +8,7 @@ Write-Host "Testing Batch Produce Functionality" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-$mycli = "java -jar dmq-client\target\mycli.jar"
+$mycli = "java -jar ../dmq-client\target\mycli.jar"
 
 # Login first (required for JWT authentication)
 Write-Host "Logging in..." -ForegroundColor Magenta

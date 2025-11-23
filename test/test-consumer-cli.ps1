@@ -6,7 +6,7 @@ Write-Host "  Consumer CLI Test Suite" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-$cliJar = "dmq-client\target\mycli.jar"
+$cliJar = "../dmq-client\target\mycli.jar"
 $cliJarAbsolute = Resolve-Path $cliJar
 $testsPassed = 0
 $testsFailed = 0
