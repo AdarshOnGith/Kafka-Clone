@@ -46,7 +46,7 @@
                         <configuration>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>DMQGuiClient</mainClass>
+                                    <mainClass>DMQGuiClientWithAuth</mainClass>
                                 </transformer>
                             </transformers>
                             <finalName>dmq-gui-client</finalName>

@@ -631,10 +631,442 @@ public class DMQGuiClientWithAuth extends JFrame {
         return args.toArray(new String[0]);
     }
     
-    // Placeholder methods for other panels
-    private JPanel createProducerPanel() { return new JPanel(); }
-    private JPanel createConsumerPanel() { return new JPanel(); }
-    private JPanel createConsumerGroupsPanel() { return new JPanel(); }
+    // Helper methods for action handlers
+    private int getSelectedAcks() {
+        String selected = (String) producerAcks.getSelectedItem();
+        if (selected.startsWith("0")) return 0;
+        if (selected.startsWith("-1")) return -1;
+        return 1;
+    }
+    
+    private String escapeQuotes(String str) {
+        return str.replace("\"", "\\\"");
+    }
+    
+    private void showError(String message) {
+        JOptionPane.showMessageDialog(this, message, "Error", JOptionPane.ERROR_MESSAGE);
+    }
+    
+    private void appendOutput(String text) {
+        outputArea.append(text);
+        outputArea.setCaretPosition(outputArea.getDocument().getLength());
+    }
+    
+    private void setConsumeButtonsEnabled(boolean enabled) {
+        consumeBtn.setEnabled(enabled);
+        consumeGroupBtn.setEnabled(enabled);
+        consumeGroupContinuousBtn.setEnabled(enabled);
+    }
+    
+    private void executeCliCommandBackground(String command) {
+        displayCommandOutput("CLI Command (Continuous): ", command);
+        appendOutput("[INFO] Starting continuous consumer... Press 'Stop' to terminate.\n\n");
+        
+        // Disable consume buttons, enable stop button
+        setConsumeButtonsEnabled(false);
+        stopConsumeBtn.setEnabled(true);
+        
+        // Execute in background thread with streaming output
+        CompletableFuture.runAsync(() -> {
+            try {
+                ProcessBuilder pb = new ProcessBuilder("java", "-jar", CLI_JAR);
+                
+                // Add command arguments properly
+                String[] args = parseCommandLine(command);
+                for (String arg : args) {
+                    pb.command().add(arg);
+                }
+                
+                pb.redirectErrorStream(true);
+                currentConsumeProcess = pb.start();
+                
+                // Read output in real-time
+                BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(currentConsumeProcess.getInputStream())
+                );
+                
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    final String outputLine = line + "\n";
+                    SwingUtilities.invokeLater(() -> appendOutput(outputLine));
+                }
+                
+                int exitCode = currentConsumeProcess.waitFor();
+                
+                SwingUtilities.invokeLater(() -> {
+                    if (exitCode != 0 && currentConsumeProcess.isAlive()) {
+                        displayError("Consumer process terminated with exit code: " + exitCode);
+                    }
+                    setConsumeButtonsEnabled(true);
+                    stopConsumeBtn.setEnabled(false);
+                    currentConsumeProcess = null;
+                });
+                
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> {
+                    displayError("CLI Error: " + e.getMessage());
+                    setConsumeButtonsEnabled(true);
+                    stopConsumeBtn.setEnabled(false);
+                    currentConsumeProcess = null;
+                });
+            }
+        });
+    }
+    
+    // Action handler methods
+    private void produceSingleMessage() {
+        String topic = producerTopic.getText().trim();
+        String key = producerKey.getText().trim();
+        String value = producerValue.getText().trim();
+        String partition = producerPartition.getText().trim();
+        int acks = getSelectedAcks();
+        
+        if (topic.isEmpty() || value.isEmpty()) {
+            showError("Topic and Value are required!");
+            return;
+        }
+        
+        StringBuilder cmd = new StringBuilder();
+        cmd.append("produce --topic ").append(topic);
+        
+        if (!key.isEmpty()) {
+            cmd.append(" --key \"").append(escapeQuotes(key)).append("\"");
+        }
+        
+        cmd.append(" --value \"").append(escapeQuotes(value)).append("\"");
+        
+        if (!partition.isEmpty()) {
+            cmd.append(" --partition ").append(partition);
+        }
+        
+        cmd.append(" --acks ").append(acks);
+        
+        executeCliCommand(cmd.toString());
+    }
+    
+    private void produceBatchMessages() {
+        String topic = producerTopic.getText().trim();
+        String partition = producerPartition.getText().trim();
+        int acks = getSelectedAcks();
+        
+        if (topic.isEmpty()) {
+            showError("Topic is required!");
+            return;
+        }
+        
+        // File chooser for batch file
+        JFileChooser fileChooser = new JFileChooser(".");
+        fileChooser.setDialogTitle("Select Batch Messages File");
+        int result = fileChooser.showOpenDialog(this);
+        
+        if (result == JFileChooser.APPROVE_OPTION) {
+            File file = fileChooser.getSelectedFile();
+            
+            StringBuilder cmd = new StringBuilder();
+            cmd.append("produce --topic ").append(topic);
+            cmd.append(" --batch-file \"").append(file.getAbsolutePath()).append("\"");
+            
+            if (!partition.isEmpty()) {
+                cmd.append(" --partition ").append(partition);
+            }
+            
+            cmd.append(" --acks ").append(acks);
+            
+            executeCliCommand(cmd.toString());
+        }
+    }
+    
+    private void consumeMessages() {
+        String topic = consumerTopic.getText().trim();
+        String partition = consumerPartition.getText().trim();
+        String offset = consumerOffset.getText().trim();
+        String maxMessages = consumerMaxMessages.getText().trim();
+        
+        if (topic.isEmpty() || partition.isEmpty() || offset.isEmpty()) {
+            showError("Topic, Partition, and Offset are required!");
+            return;
+        }
+        
+        StringBuilder cmd = new StringBuilder();
+        cmd.append("consume --topic ").append(topic);
+        cmd.append(" --partition ").append(partition);
+        cmd.append(" --offset ").append(offset);
+        cmd.append(" --max-messages ").append(maxMessages.isEmpty() ? "10" : maxMessages);
+        
+        executeCliCommand(cmd.toString());
+    }
+    
+    private void consumeWithGroup() {
+        String topic = consumerTopic.getText().trim();
+        String groupId = consumerGroupId.getText().trim();
+        String maxMessages = consumerMaxMessages.getText().trim();
+        
+        if (topic.isEmpty()) {
+            showError("Topic is required!");
+            return;
+        }
+        
+        if (groupId.isEmpty()) {
+            showError("Group ID / App ID is required for group-based consumption!");
+            return;
+        }
+        
+        StringBuilder cmd = new StringBuilder();
+        cmd.append("consume-group --topic ").append(topic);
+        cmd.append(" --app-id ").append(groupId);
+        cmd.append(" --max-messages ").append(maxMessages.isEmpty() ? "100" : maxMessages);
+        cmd.append(" --metadata-url ").append(metadataServiceUrl.getText().trim());
+        
+        executeCliCommand(cmd.toString());
+    }
+    
+    private void consumeWithGroupContinuous() {
+        String topic = consumerTopic.getText().trim();
+        String groupId = consumerGroupId.getText().trim();
+        String maxMessages = consumerMaxMessages.getText().trim();
+        
+        if (topic.isEmpty()) {
+            showError("Topic is required!");
+            return;
+        }
+        
+        if (groupId.isEmpty()) {
+            showError("Group ID / App ID is required for group-based consumption!");
+            return;
+        }
+        
+        StringBuilder cmd = new StringBuilder();
+        cmd.append("consume-group --topic ").append(topic);
+        cmd.append(" --app-id ").append(groupId);
+        cmd.append(" --max-messages ").append(maxMessages.isEmpty() ? "100" : maxMessages);
+        cmd.append(" --metadata-url ").append(metadataServiceUrl.getText().trim());
+        cmd.append(" --continuous");  // Enable continuous mode
+        
+        executeCliCommandBackground(cmd.toString());
+    }
+    
+    private void stopContinuousConsume() {
+        if (currentConsumeProcess != null && currentConsumeProcess.isAlive()) {
+            currentConsumeProcess.destroy();
+            appendOutput("\n[STOPPED] Consumer process terminated\n");
+            currentConsumeProcess = null;
+            setConsumeButtonsEnabled(true);
+            stopConsumeBtn.setEnabled(false);
+        }
+    }
+    
+    private void listConsumerGroups() {
+        String metadataUrl = metadataServiceUrl.getText().trim();
+        executeCliCommand("list-groups --metadata-url " + metadataUrl);
+    }
+    
+    private void describeConsumerGroup() {
+        String topic = groupTopic.getText().trim();
+        String appId = groupAppId.getText().trim();
+        
+        if (topic.isEmpty() || appId.isEmpty()) {
+            showError("Topic and App ID are required!");
+            return;
+        }
+        
+        String metadataUrl = metadataServiceUrl.getText().trim();
+        
+        StringBuilder cmd = new StringBuilder();
+        cmd.append("describe-group --topic ").append(topic);
+        cmd.append(" --app-id ").append(appId);
+        cmd.append(" --metadata-url ").append(metadataUrl);
+        
+        executeCliCommand(cmd.toString());
+    }
+    
+    // Panel creation methods - full implementation
+    private JPanel createProducerPanel() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBorder(new EmptyBorder(10, 10, 10, 10));
+        
+        // Form Panel
+        JPanel formPanel = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        
+        // Topic
+        gbc.gridx = 0; gbc.gridy = 0;
+        formPanel.add(new JLabel("Topic:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        producerTopic = new JTextField(20);
+        formPanel.add(producerTopic, gbc);
+        
+        // Key
+        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0;
+        formPanel.add(new JLabel("Key:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        producerKey = new JTextField(20);
+        formPanel.add(producerKey, gbc);
+        
+        // Value
+        gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0.0;
+        formPanel.add(new JLabel("Value:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0; gbc.weighty = 1.0;
+        gbc.fill = GridBagConstraints.BOTH;
+        producerValue = new JTextArea(5, 20);
+        producerValue.setBorder(BorderFactory.createLineBorder(Color.GRAY));
+        formPanel.add(new JScrollPane(producerValue), gbc);
+        
+        // Partition
+        gbc.gridx = 0; gbc.gridy = 3; gbc.weightx = 0.0; gbc.weighty = 0.0;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        formPanel.add(new JLabel("Partition (optional):"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        producerPartition = new JTextField(20);
+        producerPartition.setToolTipText("Leave empty for auto-selection");
+        formPanel.add(producerPartition, gbc);
+        
+        // Acks
+        gbc.gridx = 0; gbc.gridy = 4; gbc.weightx = 0.0;
+        formPanel.add(new JLabel("Acks:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        producerAcks = new JComboBox<>(new String[]{"1 (Leader)", "0 (None)", "-1 (All ISR)"});
+        formPanel.add(producerAcks, gbc);
+        
+        panel.add(formPanel, BorderLayout.CENTER);
+        
+        // Button Panel
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        
+        produceSingleBtn = new JButton("Produce Single Message");
+        produceSingleBtn.addActionListener(e -> produceSingleMessage());
+        buttonPanel.add(produceSingleBtn);
+        
+        produceBatchBtn = new JButton("Produce Batch (File)");
+        produceBatchBtn.addActionListener(e -> produceBatchMessages());
+        buttonPanel.add(produceBatchBtn);
+        
+        panel.add(buttonPanel, BorderLayout.SOUTH);
+        
+        return panel;
+    }
+    
+    private JPanel createConsumerPanel() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBorder(new EmptyBorder(10, 10, 10, 10));
+        
+        // Form Panel
+        JPanel formPanel = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        
+        // Topic
+        gbc.gridx = 0; gbc.gridy = 0;
+        formPanel.add(new JLabel("Topic:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        consumerTopic = new JTextField(20);
+        formPanel.add(consumerTopic, gbc);
+        
+        // Group ID / App ID
+        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0;
+        formPanel.add(new JLabel("Group ID / App ID (optional):"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        consumerGroupId = new JTextField(20);
+        consumerGroupId.setToolTipText("For group-based consumption. Leave empty for simple consume.");
+        formPanel.add(consumerGroupId, gbc);
+        
+        // Partition
+        gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0.0;
+        formPanel.add(new JLabel("Partition:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        consumerPartition = new JTextField("0", 20);
+        formPanel.add(consumerPartition, gbc);
+        
+        // Offset
+        gbc.gridx = 0; gbc.gridy = 3; gbc.weightx = 0.0;
+        formPanel.add(new JLabel("Start Offset:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        consumerOffset = new JTextField("0", 20);
+        formPanel.add(consumerOffset, gbc);
+        
+        // Max Messages
+        gbc.gridx = 0; gbc.gridy = 4; gbc.weightx = 0.0;
+        formPanel.add(new JLabel("Max Messages:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        consumerMaxMessages = new JTextField("10", 20);
+        formPanel.add(consumerMaxMessages, gbc);
+        
+        panel.add(formPanel, BorderLayout.CENTER);
+        
+        // Button Panel
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        
+        consumeBtn = new JButton("Consume (Partition)");
+        consumeBtn.setToolTipText("Direct partition consumption");
+        consumeBtn.addActionListener(e -> consumeMessages());
+        buttonPanel.add(consumeBtn);
+        
+        consumeGroupBtn = new JButton("Consume (Group - Once)");
+        consumeGroupBtn.setToolTipText("Consumer group - single poll");
+        consumeGroupBtn.addActionListener(e -> consumeWithGroup());
+        buttonPanel.add(consumeGroupBtn);
+        
+        consumeGroupContinuousBtn = new JButton("Consume (Group - Continuous)");
+        consumeGroupContinuousBtn.setToolTipText("Consumer group - continuous polling with heartbeat");
+        consumeGroupContinuousBtn.addActionListener(e -> consumeWithGroupContinuous());
+        buttonPanel.add(consumeGroupContinuousBtn);
+        
+        stopConsumeBtn = new JButton("Stop");
+        stopConsumeBtn.setEnabled(false);
+        stopConsumeBtn.setForeground(Color.RED);
+        stopConsumeBtn.addActionListener(e -> stopContinuousConsume());
+        buttonPanel.add(stopConsumeBtn);
+        
+        panel.add(buttonPanel, BorderLayout.SOUTH);
+        
+        return panel;
+    }
+    
+    private JPanel createConsumerGroupsPanel() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBorder(new EmptyBorder(10, 10, 10, 10));
+        
+        // Form Panel
+        JPanel formPanel = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        
+        // Topic
+        gbc.gridx = 0; gbc.gridy = 0;
+        formPanel.add(new JLabel("Topic:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        groupTopic = new JTextField(20);
+        groupTopic.setToolTipText("Topic name for the consumer group");
+        formPanel.add(groupTopic, gbc);
+        
+        // App ID
+        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0;
+        formPanel.add(new JLabel("App ID:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        groupAppId = new JTextField(20);
+        groupAppId.setToolTipText("Application ID (consumer group identifier)");
+        formPanel.add(groupAppId, gbc);
+        
+        panel.add(formPanel, BorderLayout.CENTER);
+        
+        // Button Panel
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        
+        listGroupsBtn = new JButton("List All Consumer Groups");
+        listGroupsBtn.addActionListener(e -> listConsumerGroups());
+        buttonPanel.add(listGroupsBtn);
+        
+        describeGroupBtn = new JButton("Describe Consumer Group");
+        describeGroupBtn.addActionListener(e -> describeConsumerGroup());
+        buttonPanel.add(describeGroupBtn);
+        
+        panel.add(buttonPanel, BorderLayout.SOUTH);
+        
+        return panel;
+    }
     
     public static void main(String[] args) {
         try {
