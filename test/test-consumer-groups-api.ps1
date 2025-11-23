@@ -10,7 +10,7 @@ Write-Host ""
 
 # Login first (required for JWT authentication)
 Write-Host "Logging in..." -ForegroundColor Yellow
-$loginOutput = java -jar dmq-client\target\mycli.jar login --username admin --password admin123 2>&1
+$loginOutput = java -jar ../dmq-client\target\mycli.jar login --username admin --password admin123 2>&1
 if ($LASTEXITCODE -eq 0) {
     Write-Host " Login successful" -ForegroundColor Green
 } else {
