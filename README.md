@@ -66,6 +66,49 @@ The system consists of four main modules:
           └─────────────────┘       └─────────────────┘
 ```
 
+### Microservices-Based Design
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Client                                  │
+│  ┌──────────────────┐              ┌──────────────────┐         │
+│  │ Producer Client  │              │ Consumer Client  │         │
+│  └────────┬─────────┘              └────────┬─────────┘         │
+└───────────┼────────────────────────────────┼───────────────────┘
+            │                                │
+            └────────────────────────────────┘
+                     │        │
+                ┌────┘        └──────────────────────────────┐
+                │                                            │    
+                |                                            |
+                |                               ┌────────────▼────────────┐
+                |                               │  Storage Service        │
+                |                               │  (Multiple Nodes)       │
+                │                               |[API-GateWay like logic] |
+                |                               │  - Leader/Follower      │
+                |                               │  - WAL Storage          │
+                |                               │  - Replication          │
+                |                               └─────────────────────────┘
+                |
+┌───────────────▼─────────────────┐
+|        Metadata Service         |
+|        (Multiple Nodes)         |
+|      [API-GateWay like logic]   | 
+|    ┌─────────────────────────┐  |  
+|    │  Metadata part          │  |
+|    │  - Topic Metadata       │  |
+|    │  - Partition Leaders    │  |
+|    │  - Consumer Offsets     │  |
+|    └─────────────────────────┘  |
+|    ┌─────────────────────────┐  |
+|    │  Controller part        │  |
+|    │  - Failure Detection    │  |
+|    │  - Leader Election      │  |
+|    │  - Cluster Coordination │  |
+|    └─────────────────────────┘  |
+└─────────────────────────────────┘
+```
+
 ### Communication Flow
 
 1. **Controller Election**: Raft consensus elects leader among 3 metadata nodes
@@ -74,6 +117,200 @@ The system consists of four main modules:
 4. **Heartbeat**: Brokers send periodic heartbeats (5s interval) to controller
 5. **Metadata Sync**: Brokers pull and maintain current cluster metadata
 6. **Controller Failover**: Automatic switch to new controller on leader failure
+
+## 🔄 Core System Flows
+
+### 🔁 Flow 1: Producer Publishes Message (Write Path)
+
+```
+Producer Client
+    │
+    │ 
+    ▼
+Producer Ingestion Service
+    │
+    │ 1. Partition assignment (hash-based)
+    │ 2. Group by partition
+    │ 3. Query Metadata Service for leaders
+    |
+    |
+    | n/w call
+    ▼
+API-gateway-like layer of metadata service
+Metadata Service
+    │
+    │ returns metadata requested.
+    ▼
+Producer Ingestion Service
+    │
+    │ n/w call to storage node(partition leader)
+    ▼
+Storage Service (Leader)
+    │
+    │ 1. Append to local WAL
+    │ 2. Replicate to followers
+    │ 3. Wait for ISR acks
+    │ 4. Return success
+    ▼
+Response chain back to Producer Client
+```
+
+#### 🔍 Additional Notes:
+- Producer initially uses **bootstrap metadata nodes** to fetch metadata.
+- On metadata fetch:
+  - Metadata service validates the request.
+  - If the topic doesn't exist, it routes to controller to create it.
+- Uses metadata to get partition leader and target broker (storage node).
+- Storage node validates and processes the produce request.
+
+---
+
+### 🧱 Kafka-Inspired Internal Broker Logic (Simplified)
+
+#### Kafka-Inspired Steps:
+
+1. **Receive & Parse Request**
+   - Authn/Authz
+   - Parse topic, partition, records, acks, producer ID/epoch, txn info
+
+2. **Validation & Quotas**
+   - Check topic/partition existence
+   - Authorization & quotas
+   - Idempotency checks
+
+3. **Append to WAL**
+   - Assign offsets
+   - Write to local log segment
+
+4. **Replication to ISR**
+   - Followers fetch data from leader
+   - Leader tracks high watermark (HW)
+
+5. **Acknowledge Based on `acks`:**
+
+| Acks Setting | Behavior                             |
+|--------------|--------------------------------------|
+| `acks=0`     | Return immediately                   |
+| `acks=1`     | Return after write to leader         |
+| `acks=all`   | Return after all ISRs replicate      |
+
+6. **Update HW & LEO**
+   - HW = last offset replicated to all ISRs
+   - LEO = next offset to be written
+
+7. **Send Response to Producer**
+   - Includes topic, partition, base offset, errors if any
+
+8. **Consumer Visibility**
+   - Only messages up to HW are fetchable
+
+---
+
+## ⚙️ When Is Metadata Updated?
+
+Metadata is updated:
+- When topics/partitions are created or deleted
+- During leader election
+- When ISR list changes
+    Leader sends updated ISR list to the controller.
+    Controller updates cluster metadata (ISR, leader info, etc.).
+    Updated metadata is propagated to all metadata brokers.
+    Metadata brokers update caches and respond with the latest cluster state to producers and consumers.
+- On configuration changes
+
+> ✅ **HW/LEO are local states**, not propagated as cluster metadata  
+> 🚫 **Metadata is not updated during normal produce flow**
+
+---
+
+### Flow 2: Consumer Reads Message (Read Path)
+
+```
+Consumer Client
+    │
+    │ 
+    ▼
+Consumer Egress Service
+    │
+    │ 1. Check consumer group membership
+    │ 2. Get partition assignment
+    │ 3. Query Metadata Service for offset & leader
+    |
+    |  n/w call to metadata service
+    |
+    ▼
+Metadata Service
+    │
+    │ Return requested metadata
+    ▼
+Consumer Egress Service
+    │
+    │ n/w call to storage (leader)
+    ▼
+Storage Service (Leader)
+    │
+    │ Read from WAL at offset
+    ▼
+Response chain back to Consumer Client
+    │
+Consumer processes messages
+    │
+    ▼
+Consumer Egress Service
+    │
+    │ Update offset in Metadata Service
+    ▼
+Offset committed
+```
+
+---
+
+## 🔄 Flow 3: Cluster Self-Healing (Failure Recovery)
+
+```
+Controller Service
+    │
+    │ Monitor heartbeats / Watch nodes
+    ▼
+Detect Storage Node Failure
+    │
+    │ Query Metadata part for affected partitions
+    ▼
+For each partition:
+    │
+    │ 1. Get ISR list
+    │ 2. Select new leader from ISR
+    │ 3. Update Metadata Service
+    ▼
+Metadata Service(s) updated and sync-ed
+    │
+    │ New leader address stored
+    ▼
+Client services refresh metadata cache
+    │
+    │ Next requests route to new leader
+    ▼
+Cluster healed
+
+```
+
+---
+
+### 🧠 Controller Election & Recovery Details
+
+- All controller nodes participate in a **Raft quorum**.
+- The **current controller is the Raft leader**.
+- If controller fails:
+  - Raft detects failure via missed heartbeats
+  - Remaining nodes perform **automatic leader election**
+  - New Raft leader becomes the **active controller**
+
+**Responsibilities of New Controller:**
+- Resume partition leader election
+- ISR management
+- Metadata propagation
+- Cluster-wide coordination
+- basically take place of old controller
 
 ## ✨ Features
 
@@ -336,6 +573,58 @@ storage:
 - **Producer**: Message publishing
 - **Consumer**: Message consumption
 - **MetadataClient**: Cluster metadata discovery
+
+## 📊 Functional Breakdown
+
+### 1. 📇 Metadata Service
+
+#### a. **Metadata Subsystem**
+**Responsibilities:**
+- Track topic, partition, and leader information
+- Store and serve metadata to producers/consumers
+- Maintain consumer group offsets
+- Provide discovery for storage nodes
+
+**Data Stored:**
+- Topics and partitions
+- Partition leaders and ISR list
+- Consumer group offsets
+- Cluster topology
+
+**Storage:** PostgreSQL or similar relational DB
+
+---
+
+#### b1. **Controller Subsystem**
+**Responsibilities:**
+- Detect broker/storage node failures
+- Perform partition leader elections
+- Coordinate replication and ISR tracking
+- Update metadata based on cluster state changes
+
+**Components:**
+- Write-Ahead Log (WAL) for changes
+- Leader/follower coordination
+- Heartbeat monitoring
+- Leader election logic
+- Metadata broadcasting to all nodes
+---
+
+#### b2. **Cluster Coordination Subsystem**
+**Responsibilities:**
+- Distributed locking
+- Leader election for controller role
+- Ephemeral node tracking
+- Configuration synchronization across nodes
+
+### 2. 🗄️ Storage Service
+
+**Responsibilities:**
+- Persist messages using Write-Ahead Log (WAL)
+- Handle partition leadership (leader/follower role duties)
+- Replicate data to ISR nodes
+- Serve read requests to consumers
+- Manage log retention and compaction
 
 ## 📚 API Documentation
 
