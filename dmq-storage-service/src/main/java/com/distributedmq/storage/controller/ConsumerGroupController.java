@@ -5,11 +5,16 @@ import com.distributedmq.common.dto.ConsumerGroupOperationResponse;
 import com.distributedmq.common.dto.ConsumerGroupState;
 import com.distributedmq.common.dto.ConsumerHeartbeatRequest;
 import com.distributedmq.common.dto.ConsumerJoinRequest;
+import com.distributedmq.common.security.JwtException;
+import com.distributedmq.common.security.JwtValidator;
+import com.distributedmq.common.security.UserPrincipal;
 import com.distributedmq.storage.consumergroup.ConsumerGroupManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import javax.servlet.http.HttpServletRequest;
 
 /**
  * REST API for consumer group coordination
@@ -22,6 +27,7 @@ import org.springframework.web.bind.annotation.*;
 public class ConsumerGroupController {
     
     private final ConsumerGroupManager groupManager;
+    private final JwtValidator jwtValidator;
     
     /**
      * Consumer join group request
@@ -29,9 +35,22 @@ public class ConsumerGroupController {
      */
     @PostMapping("/join")
     public ResponseEntity<ConsumerGroupOperationResponse> joinGroup(
-            @RequestBody ConsumerJoinRequest request) {
+            @RequestBody ConsumerJoinRequest request,
+            HttpServletRequest httpRequest) {
         
         try {
+            // JWT Authentication & Authorization
+            try {
+                UserPrincipal user = jwtValidator.validateRequest(httpRequest);
+                if (!jwtValidator.hasAnyRole(user, "CONSUMER", "ADMIN")) {
+                    log.warn("User {} lacks CONSUMER/ADMIN role for consumer group join", user.getUsername());
+                    return ResponseEntity.status(403).build();
+                }
+            } catch (JwtException e) {
+                log.warn("JWT validation failed: {}", e.getMessage());
+                return ResponseEntity.status(401).build();
+            }
+            
             log.info("Consumer {} requesting to join group {}", 
                      request.getConsumerId(), request.getGroupId());
             
@@ -58,6 +77,11 @@ public class ConsumerGroupController {
     /**
      * Consumer heartbeat/commit request
      * POST /api/v1/consumer-groups/heartbeat
+     * 
+     * NOTE: No JWT validation - heartbeats are internal lifecycle operations
+     * after the consumer has already authenticated during join. Validating JWT
+     * on every heartbeat (every 3 seconds) would cause performance issues and
+     * token expiry problems.
      */
     @PostMapping("/heartbeat")
     public ResponseEntity<ConsumerGroupOperationResponse> heartbeat(
@@ -92,7 +116,18 @@ public class ConsumerGroupController {
      * GET /api/v1/consumer-groups/{groupId}
      */
     @GetMapping("/{groupId}")
-    public ResponseEntity<ConsumerGroupState> getGroupState(@PathVariable String groupId) {
+    public ResponseEntity<ConsumerGroupState> getGroupState(
+            @PathVariable String groupId,
+            HttpServletRequest httpRequest) {
+        
+        // JWT Authentication (any authenticated user can read)
+        try {
+            jwtValidator.validateRequest(httpRequest);
+        } catch (JwtException e) {
+            log.warn("JWT validation failed: {}", e.getMessage());
+            return ResponseEntity.status(401).build();
+        }
+        
         try {
             ConsumerGroupState state = groupManager.getGroupState(groupId);
             if (state == null) {

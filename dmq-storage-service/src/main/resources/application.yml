@@ -47,6 +47,13 @@ dmq:
     # Consumer Configuration
     consumer:
       default-max-messages: ${CONSUMER_DEFAULT_MAX_MESSAGES:}
+  
+  # JWT Security Configuration
+  security:
+    jwt:
+      access-token-expiry-seconds: 900  # 15 minutes
+      issuer: "dmq-cluster"
+      audience: "dmq-clients"
 
 # Storage Service Metadata Configuration
 storage:

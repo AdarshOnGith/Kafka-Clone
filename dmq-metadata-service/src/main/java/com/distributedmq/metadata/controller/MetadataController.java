@@ -4,6 +4,9 @@ import com.distributedmq.common.dto.ControllerInfo;
 import com.distributedmq.common.dto.MetadataUpdateResponse;
 import com.distributedmq.common.model.TopicMetadata;
 import com.distributedmq.common.config.ServiceDiscovery;
+import com.distributedmq.common.security.JwtException;
+import com.distributedmq.common.security.JwtValidator;
+import com.distributedmq.common.security.UserPrincipal;
 import com.distributedmq.metadata.coordination.RaftController;
 import com.distributedmq.common.dto.CreateTopicRequest;
 import com.distributedmq.metadata.dto.TopicMetadataResponse;
@@ -27,6 +30,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletRequest;
 import java.util.List;
 import java.util.Map;
 
@@ -47,6 +51,7 @@ public class MetadataController {
 
     private final MetadataService metadataService;
     private final RaftController raftController;
+    private final JwtValidator jwtValidator;
 
     /**
      * Get current controller (Raft leader) information
@@ -91,11 +96,28 @@ public class MetadataController {
      */
     @PostMapping("/topics")
     public ResponseEntity<TopicMetadataResponse> createTopic(
-            @Validated @RequestBody CreateTopicRequest request) {
+            @Validated @RequestBody CreateTopicRequest request,
+            HttpServletRequest httpRequest) {
         
         log.info("📝 Received request to create topic: {}", request.getTopicName());
         log.debug("Request details: partitions={}, replicationFactor={}, retentionMs={}", 
             request.getPartitionCount(), request.getReplicationFactor(), request.getRetentionMs());
+        
+        // JWT Authentication & Authorization
+        try {
+            UserPrincipal user = jwtValidator.validateRequest(httpRequest);
+            if (!jwtValidator.hasRole(user, "ADMIN")) {
+                log.warn("User {} lacks ADMIN role for topic creation", user.getUsername());
+                return ResponseEntity.status(403)
+                    .header("X-Error-Message", "Admin role required")
+                    .build();
+            }
+        } catch (JwtException e) {
+            log.warn("JWT validation failed: {}", e.getMessage());
+            return ResponseEntity.status(401)
+                .header("X-Error-Message", "Invalid or missing authentication token")
+                .build();
+        }
         
         // Validate required fields
         if (request.getTopicName() == null || request.getTopicName().trim().isEmpty()) {
@@ -163,7 +185,16 @@ public class MetadataController {
      */
     @GetMapping("/topics/{topicName}")
     public ResponseEntity<TopicMetadataResponse> getTopicMetadata(
-            @PathVariable String topicName) {
+            @PathVariable String topicName,
+            HttpServletRequest httpRequest) {
+        
+        // JWT Authentication (any authenticated user can read)
+        try {
+            jwtValidator.validateRequest(httpRequest);
+        } catch (JwtException e) {
+            log.warn("JWT validation failed: {}", e.getMessage());
+            return ResponseEntity.status(401).build();
+        }
         
         log.debug("Fetching metadata for topic: {}", topicName);
         
@@ -195,7 +226,16 @@ public class MetadataController {
      * Can be served by any node (read operation)
      */
     @GetMapping("/topics")
-    public ResponseEntity<List<String>> listTopics() {
+    public ResponseEntity<List<String>> listTopics(HttpServletRequest httpRequest) {
+        
+        // JWT Authentication (any authenticated user can read)
+        try {
+            jwtValidator.validateRequest(httpRequest);
+        } catch (JwtException e) {
+            log.warn("JWT validation failed: {}", e.getMessage());
+            return ResponseEntity.status(401).build();
+        }
+        
         log.debug("Listing all topics");
         
         try {
@@ -213,8 +253,20 @@ public class MetadataController {
      * Only controller leader can process this
      */
     @DeleteMapping("/topics/{topicName}")
-    public ResponseEntity<Void> deleteTopic(@PathVariable String topicName) {
+    public ResponseEntity<Void> deleteTopic(@PathVariable String topicName, HttpServletRequest httpRequest) {
         log.info("Received request to delete topic: {}", topicName);
+        
+        // JWT Authentication & Authorization
+        try {
+            UserPrincipal user = jwtValidator.validateRequest(httpRequest);
+            if (!jwtValidator.hasRole(user, "ADMIN")) {
+                log.warn("User {} lacks ADMIN role for topic deletion", user.getUsername());
+                return ResponseEntity.status(403).build();
+            }
+        } catch (JwtException e) {
+            log.warn("JWT validation failed: {}", e.getMessage());
+            return ResponseEntity.status(401).build();
+        }
         
         // Check if this node is the controller leader
         if (!raftController.isControllerLeader()) {

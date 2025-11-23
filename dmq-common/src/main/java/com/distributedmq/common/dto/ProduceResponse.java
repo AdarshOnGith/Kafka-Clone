@@ -44,6 +44,7 @@ public class ProduceResponse {
         NONE(0, "No error"),
         UNKNOWN_TOPIC_OR_PARTITION(3, "Unknown topic or partition"),
         INVALID_REQUEST(10, "Invalid request"),
+        UNAUTHORIZED(16, "Authentication required or insufficient permissions"),
         NOT_LEADER_FOR_PARTITION(6, "Not leader for partition"),
         MESSAGE_TOO_LARGE(10, "Message too large"),
         INVALID_PRODUCER_EPOCH(47, "Invalid producer epoch"),

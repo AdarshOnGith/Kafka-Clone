@@ -1,6 +1,7 @@
 package com.distributedmq.client.consumer;
 
 import com.distributedmq.client.cli.utils.MetadataServiceClient;
+import com.distributedmq.client.cli.utils.TokenManager;
 import com.distributedmq.common.config.ServiceDiscovery;
 import com.distributedmq.common.dto.ConsumeRequest;
 import com.distributedmq.common.dto.ConsumeResponse;
@@ -27,6 +28,7 @@ public class SimpleConsumer {
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final MetadataServiceClient metadataClient;
+    private final TokenManager tokenManager;
     private final String controllerUrl;
     private final Map<String, Long> partitionOffsets; // Track offsets per partition
     
@@ -36,6 +38,7 @@ public class SimpleConsumer {
                 .build();
         this.objectMapper = new ObjectMapper();
         this.metadataClient = new MetadataServiceClient(metadataUrl);
+        this.tokenManager = TokenManager.getInstance();
         this.controllerUrl = metadataClient.discoverController();
         this.partitionOffsets = new HashMap<>();
         
@@ -66,14 +69,26 @@ public class SimpleConsumer {
         String url = "http://" + leader.getAddress() + "/api/v1/storage/consume";
         String requestBody = objectMapper.writeValueAsString(request);
         
-        HttpRequest httpRequest = HttpRequest.newBuilder()
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(30));
+        
+        // Add JWT token if available
+        String authHeader = tokenManager.getAuthorizationHeader();
+        if (authHeader != null) {
+            requestBuilder.header("Authorization", authHeader);
+        }
+        
+        HttpRequest httpRequest = requestBuilder
                 .POST(HttpRequest.BodyPublishers.ofString(requestBody))
-                .timeout(Duration.ofSeconds(30))
                 .build();
         
         HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+        
+        if (response.statusCode() == 401) {
+            throw new RuntimeException("Authentication required. Please login first: mycli login --username <user>");
+        }
         
         if (response.statusCode() != 200) {
             throw new RuntimeException("Failed to consume messages: " + response.body());

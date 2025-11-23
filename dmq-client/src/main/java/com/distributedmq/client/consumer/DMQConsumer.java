@@ -1,5 +1,6 @@
 package com.distributedmq.client.consumer;
 
+import com.distributedmq.client.cli.utils.TokenManager;
 import com.distributedmq.common.config.ServiceDiscovery;
 import com.distributedmq.common.dto.*;
 import com.distributedmq.common.model.BrokerNode;
@@ -29,6 +30,7 @@ public class DMQConsumer implements Consumer {
     // HTTP communication
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
+    private final TokenManager tokenManager;
     
     // Consumer group state
     private String groupId;
@@ -62,6 +64,7 @@ public class DMQConsumer implements Consumer {
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
         this.objectMapper = new ObjectMapper();
+        this.tokenManager = TokenManager.getInstance();
         log.info("DMQConsumer initialized with config: {}", config);
     }
     
@@ -145,12 +148,19 @@ public class DMQConsumer implements Consumer {
         
         String url = metadataUrl + "/api/v1/metadata/consumer-groups/find-or-create";
         
-        HttpRequest httpRequest = HttpRequest.newBuilder()
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
-                .timeout(Duration.ofSeconds(10))
-                .build();
+                .timeout(Duration.ofSeconds(10));
+        
+        // Add JWT token if available
+        String authHeader = tokenManager.getAuthorizationHeader();
+        if (authHeader != null) {
+            requestBuilder.header("Authorization", authHeader);
+        }
+        
+        HttpRequest httpRequest = requestBuilder.build();
         
         HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
         
@@ -184,12 +194,19 @@ public class DMQConsumer implements Consumer {
         
         String joinUrl = "http://" + groupLeaderUrl + "/api/v1/consumer-groups/join";
         
-        HttpRequest httpRequest = HttpRequest.newBuilder()
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(joinUrl))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
-                .timeout(Duration.ofSeconds(10))
-                .build();
+                .timeout(Duration.ofSeconds(10));
+        
+        // Add JWT token if available
+        String authHeader = tokenManager.getAuthorizationHeader();
+        if (authHeader != null) {
+            requestBuilder.header("Authorization", authHeader);
+        }
+        
+        HttpRequest httpRequest = requestBuilder.build();
         
         HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
         
@@ -300,12 +317,19 @@ public class DMQConsumer implements Consumer {
         
         String heartbeatUrl = "http://" + groupLeaderUrl + "/api/v1/consumer-groups/heartbeat";
         
-        HttpRequest httpRequest = HttpRequest.newBuilder()
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(heartbeatUrl))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
-                .timeout(Duration.ofSeconds(5))
-                .build();
+                .timeout(Duration.ofSeconds(5));
+        
+        // Add JWT token if available
+        String authHeader = tokenManager.getAuthorizationHeader();
+        if (authHeader != null) {
+            requestBuilder.header("Authorization", authHeader);
+        }
+        
+        HttpRequest httpRequest = requestBuilder.build();
         
         HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
         
@@ -448,12 +472,19 @@ public class DMQConsumer implements Consumer {
         
         String consumeUrl = "http://" + leader.getAddress() + "/api/v1/storage/consume";
         
-        HttpRequest httpRequest = HttpRequest.newBuilder()
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(consumeUrl))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
-                .timeout(Duration.ofMillis(Math.max(timeoutMs, 1000)))
-                .build();
+                .timeout(Duration.ofMillis(Math.max(timeoutMs, 1000)));
+        
+        // Add JWT token if available
+        String authHeader = tokenManager.getAuthorizationHeader();
+        if (authHeader != null) {
+            requestBuilder.header("Authorization", authHeader);
+        }
+        
+        HttpRequest httpRequest = requestBuilder.build();
         
         HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
         
@@ -513,11 +544,18 @@ public class DMQConsumer implements Consumer {
         
         String url = metadataUrl + "/api/v1/metadata/topics/" + subscribedTopic;
         
-        HttpRequest httpRequest = HttpRequest.newBuilder()
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .GET()
-                .timeout(Duration.ofSeconds(5))
-                .build();
+                .timeout(Duration.ofSeconds(5));
+        
+        // Add JWT token if available
+        String authHeader = tokenManager.getAuthorizationHeader();
+        if (authHeader != null) {
+            requestBuilder.header("Authorization", authHeader);
+        }
+        
+        HttpRequest httpRequest = requestBuilder.build();
         
         HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
         
