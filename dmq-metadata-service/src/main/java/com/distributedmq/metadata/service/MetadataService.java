@@ -3,7 +3,7 @@ package com.distributedmq.metadata.service;
 import com.distributedmq.common.dto.MetadataUpdateRequest;
 import com.distributedmq.common.dto.MetadataUpdateResponse;
 import com.distributedmq.common.model.TopicMetadata;
-import com.distributedmq.metadata.dto.CreateTopicRequest;
+import com.distributedmq.common.dto.CreateTopicRequest;
 import com.distributedmq.metadata.dto.RegisterBrokerRequest;
 import com.distributedmq.metadata.dto.BrokerResponse;
 

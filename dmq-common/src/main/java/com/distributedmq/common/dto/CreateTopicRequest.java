@@ -1,4 +1,4 @@
-package com.distributedmq.metadata.dto;
+package com.distributedmq.common.dto;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;

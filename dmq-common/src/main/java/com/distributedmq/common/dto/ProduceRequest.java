@@ -1,5 +1,7 @@
 package com.distributedmq.common.dto;
 
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -42,7 +44,11 @@ public class ProduceRequest {
     @AllArgsConstructor
     public static class ProduceMessage {
         private String key;
+        
+        @JsonDeserialize(using = Base64ByteArrayDeserializer.class)
+        @JsonSerialize(using = Base64ByteArraySerializer.class)
         private byte[] value;
+        
         private Long timestamp; // Optional, will use current time if null
     }
 }

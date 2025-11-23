@@ -64,6 +64,10 @@ public class StorageConfig {
         private Long retentionCheckIntervalMs = 300000L; // 5 minutes
         private String dataDir = "./data";
         private String logsDir = "logs";
+        
+        // Batch Write Optimization
+        private Boolean batchWriteEnabled = true;  // Default: use optimized batch writes
+        private Integer batchWriteMaxMessages = 1000;  // Max messages per batch for memory safety
     }
 
     // ========== REPLICATION CONFIGURATION ==========

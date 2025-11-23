@@ -537,6 +537,29 @@ public class MetadataStore {
     }
 
     /**
+     * Get partition count for a topic
+     * Counts partitions by scanning partition keys
+     */
+    public Integer getPartitionCount(String topic) {
+        if (topic == null) {
+            return null;
+        }
+        
+        // Count partition keys that start with "topic-"
+        String prefix = topic + "-";
+        int count = 0;
+        
+        for (String key : partitionLeaders.keySet()) {
+            if (key.startsWith(prefix)) {
+                count++;
+            }
+        }
+        
+        log.debug("Partition count for topic {}: {}", topic, count);
+        return count > 0 ? count : null;
+    }
+
+    /**
      * Notify metadata service about partition leadership change
      * Called when this broker detects a leadership change
      */

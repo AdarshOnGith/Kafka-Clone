@@ -26,6 +26,10 @@ dmq:
       retention-check-interval-ms: ${WAL_RETENTION_CHECK_INTERVAL_MS:}
       data-dir: ${WAL_DATA_DIR:}
       logs-dir: ${LOGS_DIR:}
+      
+      # Batch Write Optimization (toggle)
+      batch-write-enabled: ${WAL_BATCH_WRITE_ENABLED:true}  # true = atomic batch writes, false = individual writes
+      batch-write-max-messages: ${WAL_BATCH_WRITE_MAX_MESSAGES:250}  # Max messages per batch (memory safety)
 
     # Replication Configuration
     replication:

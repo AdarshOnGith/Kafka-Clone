@@ -5,7 +5,7 @@ import com.distributedmq.common.dto.MetadataUpdateResponse;
 import com.distributedmq.common.model.TopicMetadata;
 import com.distributedmq.common.config.ServiceDiscovery;
 import com.distributedmq.metadata.coordination.RaftController;
-import com.distributedmq.metadata.dto.CreateTopicRequest;
+import com.distributedmq.common.dto.CreateTopicRequest;
 import com.distributedmq.metadata.dto.TopicMetadataResponse;
 import com.distributedmq.metadata.dto.RegisterBrokerRequest;
 import com.distributedmq.metadata.dto.BrokerResponse;

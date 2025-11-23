@@ -28,6 +28,10 @@ public class MetadataStateMachine {
     private final Map<String, TopicInfo> topics = new ConcurrentHashMap<>();
     private final Map<String, Map<Integer, PartitionInfo>> partitions = new ConcurrentHashMap<>();
     
+    // Consumer group registry - minimal routing information only
+    // Key: "topic:appId" -> ConsumerGroupInfo (with group leader broker ID)
+    private final Map<String, ConsumerGroupInfo> consumerGroups = new ConcurrentHashMap<>();
+    
     // Metadata version - incremented on every state change for tracking staleness
     private final AtomicLong metadataVersion = new AtomicLong(0);
 
@@ -115,6 +119,34 @@ public class MetadataStateMachine {
             applyDeleteTopic(cmd);
             log.info("Successfully applied DeleteTopicCommand for topic {}", cmd.getTopicName());
             stateChanged = true;  // Topic deletion always represents a change
+        }
+        // Handle RegisterConsumerGroupCommand
+        else if (command instanceof RegisterConsumerGroupCommand) {
+            RegisterConsumerGroupCommand cmd = (RegisterConsumerGroupCommand) command;
+            log.info("Applying RegisterConsumerGroupCommand: groupId={}, topic={}, appId={}, leader={}", 
+                    cmd.getGroupId(), cmd.getTopic(), cmd.getAppId(), cmd.getGroupLeaderBrokerId());
+            applyRegisterConsumerGroup(cmd);
+            log.info("Successfully applied RegisterConsumerGroupCommand for group {}", cmd.getGroupId());
+            stateChanged = true;  // New consumer group always represents a change
+        }
+        // Handle UpdateConsumerGroupLeaderCommand
+        else if (command instanceof UpdateConsumerGroupLeaderCommand) {
+            UpdateConsumerGroupLeaderCommand cmd = (UpdateConsumerGroupLeaderCommand) command;
+            log.info("Applying UpdateConsumerGroupLeaderCommand: groupId={}, newLeader={}", 
+                    cmd.getGroupId(), cmd.getNewGroupLeaderBrokerId());
+            stateChanged = applyUpdateConsumerGroupLeader(cmd);
+            if (stateChanged) {
+                log.info("Successfully applied UpdateConsumerGroupLeaderCommand for group {}", cmd.getGroupId());
+            }
+        }
+        // Handle DeleteConsumerGroupCommand
+        else if (command instanceof DeleteConsumerGroupCommand) {
+            DeleteConsumerGroupCommand cmd = (DeleteConsumerGroupCommand) command;
+            log.info("Applying DeleteConsumerGroupCommand: groupId={}", cmd.getGroupId());
+            stateChanged = applyDeleteConsumerGroup(cmd);
+            if (stateChanged) {
+                log.info("Successfully applied DeleteConsumerGroupCommand for group {}", cmd.getGroupId());
+            }
         }
         // Handle Map-based commands (fallback for serialization issues)
         else if (command instanceof Map) {
@@ -298,6 +330,52 @@ public class MetadataStateMachine {
                 if (stateChanged) {
                     log.info("Successfully applied Map-based UpdateISRCommand for {}-{}", 
                             cmd.getTopicName(), cmd.getPartitionId());
+                }
+            }
+            // Try RegisterConsumerGroupCommand (has groupId, topic, appId, groupLeaderBrokerId)
+            else if (map.containsKey("groupId") && map.containsKey("topic") && 
+                     map.containsKey("appId") && map.containsKey("groupLeaderBrokerId")) {
+                log.info("Applying Map-based RegisterConsumerGroupCommand: {}", map);
+                
+                RegisterConsumerGroupCommand cmd = RegisterConsumerGroupCommand.builder()
+                        .groupId((String) map.get("groupId"))
+                        .topic((String) map.get("topic"))
+                        .appId((String) map.get("appId"))
+                        .groupLeaderBrokerId(((Number) map.get("groupLeaderBrokerId")).intValue())
+                        .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
+                        .build();
+                applyRegisterConsumerGroup(cmd);
+                log.info("Successfully applied Map-based RegisterConsumerGroupCommand for group {}", cmd.getGroupId());
+                stateChanged = true;
+            }
+            // Try UpdateConsumerGroupLeaderCommand (has groupId, newGroupLeaderBrokerId - NOT topic/appId)
+            else if (map.containsKey("groupId") && map.containsKey("newGroupLeaderBrokerId") && 
+                     !map.containsKey("topic") && !map.containsKey("appId")) {
+                log.info("Applying Map-based UpdateConsumerGroupLeaderCommand: {}", map);
+                
+                UpdateConsumerGroupLeaderCommand cmd = UpdateConsumerGroupLeaderCommand.builder()
+                        .groupId((String) map.get("groupId"))
+                        .newGroupLeaderBrokerId(((Number) map.get("newGroupLeaderBrokerId")).intValue())
+                        .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
+                        .build();
+                stateChanged = applyUpdateConsumerGroupLeader(cmd);
+                if (stateChanged) {
+                    log.info("Successfully applied Map-based UpdateConsumerGroupLeaderCommand for group {}", cmd.getGroupId());
+                }
+            }
+            // Try DeleteConsumerGroupCommand (has ONLY groupId and timestamp, nothing else)
+            else if (map.containsKey("groupId") && map.size() <= 2 && 
+                     !map.containsKey("topic") && !map.containsKey("appId") && 
+                     !map.containsKey("newGroupLeaderBrokerId")) {
+                log.info("Applying Map-based DeleteConsumerGroupCommand: {}", map);
+                
+                DeleteConsumerGroupCommand cmd = DeleteConsumerGroupCommand.builder()
+                        .groupId((String) map.get("groupId"))
+                        .timestamp(map.containsKey("timestamp") ? ((Number) map.get("timestamp")).longValue() : System.currentTimeMillis())
+                        .build();
+                stateChanged = applyDeleteConsumerGroup(cmd);
+                if (stateChanged) {
+                    log.info("Successfully applied Map-based DeleteConsumerGroupCommand for group {}", cmd.getGroupId());
                 }
             }
             else {
@@ -625,5 +703,139 @@ public class MetadataStateMachine {
         // TODO: Restore partition metadata
         // TODO: Restore broker metadata
         // TODO: Restore consumer group metadata
+    }
+
+    // ==================== CONSUMER GROUP OPERATIONS ====================
+
+    /**
+     * Apply consumer group registration
+     */
+    private void applyRegisterConsumerGroup(RegisterConsumerGroupCommand command) {
+        String groupKey = generateConsumerGroupKey(command.getTopic(), command.getAppId());
+        
+        ConsumerGroupInfo groupInfo = ConsumerGroupInfo.builder()
+                .groupId(command.getGroupId())
+                .topic(command.getTopic())
+                .appId(command.getAppId())
+                .groupLeaderBrokerId(command.getGroupLeaderBrokerId())
+                .createdAt(command.getTimestamp())
+                .lastModifiedAt(command.getTimestamp())
+                .build();
+        
+        consumerGroups.put(groupKey, groupInfo);
+        log.info("Registered consumer group: groupId={}, topic={}, appId={}, leader=broker-{}", 
+                command.getGroupId(), command.getTopic(), command.getAppId(), command.getGroupLeaderBrokerId());
+    }
+
+    /**
+     * Apply consumer group leader update
+     * @return true if state changed, false if no change
+     */
+    private boolean applyUpdateConsumerGroupLeader(UpdateConsumerGroupLeaderCommand command) {
+        // Find the group by groupId
+        ConsumerGroupInfo groupInfo = consumerGroups.values().stream()
+                .filter(g -> g.getGroupId().equals(command.getGroupId()))
+                .findFirst()
+                .orElse(null);
+        
+        if (groupInfo == null) {
+            log.warn("Cannot update leader for non-existent consumer group: {}", command.getGroupId());
+            return false;
+        }
+        
+        Integer oldLeader = groupInfo.getGroupLeaderBrokerId();
+        if (oldLeader.equals(command.getNewGroupLeaderBrokerId())) {
+            log.debug("Consumer group {} leader already set to broker-{}, no change", 
+                     command.getGroupId(), command.getNewGroupLeaderBrokerId());
+            return false;
+        }
+        
+        groupInfo.setGroupLeaderBrokerId(command.getNewGroupLeaderBrokerId());
+        groupInfo.setLastModifiedAt(command.getTimestamp());
+        
+        log.info("Updated consumer group {} leader: broker-{} -> broker-{}", 
+                command.getGroupId(), oldLeader, command.getNewGroupLeaderBrokerId());
+        return true;
+    }
+
+    /**
+     * Apply consumer group deletion
+     * @return true if state changed, false if group didn't exist
+     */
+    private boolean applyDeleteConsumerGroup(DeleteConsumerGroupCommand command) {
+        // Find and remove the group by groupId
+        String removedKey = null;
+        for (Map.Entry<String, ConsumerGroupInfo> entry : consumerGroups.entrySet()) {
+            if (entry.getValue().getGroupId().equals(command.getGroupId())) {
+                removedKey = entry.getKey();
+                break;
+            }
+        }
+        
+        if (removedKey != null) {
+            ConsumerGroupInfo removed = consumerGroups.remove(removedKey);
+            log.info("Deleted consumer group: groupId={}, topic={}, appId={}", 
+                    removed.getGroupId(), removed.getTopic(), removed.getAppId());
+            return true;
+        } else {
+            log.warn("Cannot delete non-existent consumer group: {}", command.getGroupId());
+            return false;
+        }
+    }
+
+    /**
+     * Get consumer group by topic and app ID
+     */
+    public ConsumerGroupInfo getConsumerGroup(String topic, String appId) {
+        String groupKey = generateConsumerGroupKey(topic, appId);
+        return consumerGroups.get(groupKey);
+    }
+
+    /**
+     * Get consumer group by group ID
+     */
+    public ConsumerGroupInfo getConsumerGroupById(String groupId) {
+        return consumerGroups.values().stream()
+                .filter(g -> g.getGroupId().equals(groupId))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * Get all consumer groups
+     */
+    public Map<String, ConsumerGroupInfo> getAllConsumerGroups() {
+        return new ConcurrentHashMap<>(consumerGroups);
+    }
+
+    /**
+     * Get all consumer groups coordinated by a specific broker
+     */
+    public List<ConsumerGroupInfo> getConsumerGroupsByLeader(Integer brokerId) {
+        return consumerGroups.values().stream()
+                .filter(g -> g.getGroupLeaderBrokerId().equals(brokerId))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Check if a consumer group exists
+     */
+    public boolean consumerGroupExists(String topic, String appId) {
+        String groupKey = generateConsumerGroupKey(topic, appId);
+        return consumerGroups.containsKey(groupKey);
+    }
+
+    /**
+     * Get count of consumer groups
+     */
+    public int getConsumerGroupCount() {
+        return consumerGroups.size();
+    }
+
+    /**
+     * Generate consumer group key from topic and app ID
+     */
+    private String generateConsumerGroupKey(String topic, String appId) {
+        return topic + ":" + appId;
     }
 }
