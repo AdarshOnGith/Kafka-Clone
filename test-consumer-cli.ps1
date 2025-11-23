@@ -20,6 +20,19 @@ if (-not (Test-Path $cliJar)) {
 Write-Host "Using CLI JAR: $cliJar" -ForegroundColor Gray
 Write-Host ""
 
+# Login first (required for JWT authentication)
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "Logging in..." -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+$loginOutput = & java -jar $cliJar login --username admin --password admin123 2>&1
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] Login successful" -ForegroundColor Green
+} else {
+    Write-Host "[ERROR] Login failed: $loginOutput" -ForegroundColor Red
+    exit 1
+}
+Write-Host ""
+
 # ========================================
 # Setup: Create test topic and produce messages
 # ========================================
@@ -59,7 +72,7 @@ for ($p = 0; $p -lt 3; $p++) {
     & java -jar $cliJar produce --topic $testTopic --batch-file $batchFile --partition $p --acks 1 2>&1 | Out-Null
     
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "  Batch for partition $p produced (10 messages)" -ForegroundColor Gray
+        Write-Host "  Batch for partition $p produced - 10 messages" -ForegroundColor Gray
     } else {
         Write-Host "  [WARN] Batch for partition $p failed" -ForegroundColor Yellow
     }

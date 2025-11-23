@@ -20,6 +20,19 @@ if (-not (Test-Path $cliJar)) {
 Write-Host "Using CLI JAR: $cliJar" -ForegroundColor Gray
 Write-Host ""
 
+# Login first (required for JWT authentication)
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "Logging in..." -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+$loginOutput = & java -jar $cliJar login --username admin --password admin123 2>&1
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] Login successful" -ForegroundColor Green
+} else {
+    Write-Host "[ERROR] Login failed: $loginOutput" -ForegroundColor Red
+    exit 1
+}
+Write-Host ""
+
 # Helper function to run CLI command
 function Test-CliCommand {
     param(
@@ -36,22 +49,22 @@ function Test-CliCommand {
     
     if ($ShouldSucceed) {
         if ($exitCode -eq 0) {
-            Write-Host "  ??? PASSED" -ForegroundColor Green
+            Write-Host "  [PASS]" -ForegroundColor Green
             $script:testsPassed++
             return $true
         } else {
-            Write-Host "  ??? FAILED (exit code: $exitCode)" -ForegroundColor Red
+            Write-Host "  [FAIL] (exit code: $exitCode)" -ForegroundColor Red
             Write-Host "  Output: $output" -ForegroundColor Red
             $script:testsFailed++
             return $false
         }
     } else {
         if ($exitCode -ne 0) {
-            Write-Host "  ??? PASSED (expected failure)" -ForegroundColor Green
+            Write-Host "  [PASS] (expected failure)" -ForegroundColor Green
             $script:testsPassed++
             return $true
         } else {
-            Write-Host "  ??? FAILED (should have failed but succeeded)" -ForegroundColor Red
+            Write-Host "  [FAIL] (should have failed but succeeded)" -ForegroundColor Red
             $script:testsFailed++
             return $false
         }
@@ -60,7 +73,7 @@ function Test-CliCommand {
 
 # Test 1: CLI Help
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "Test Suite 1: CLI Help & Info" -ForegroundColor Cyan
+Write-Host "Test Suite 1: CLI Help and Info" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Test-CliCommand "Help Command" @("--help")
@@ -83,10 +96,10 @@ Write-Host "[Info] Creating test topic: $testTopic" -ForegroundColor Yellow
 # Create topic first
 $createOutput = & java -jar $cliJar create-topic --name $testTopic --partitions 5 --replication-factor 2 2>&1
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "??? Topic created successfully" -ForegroundColor Green
+    Write-Host "[OK] Topic created successfully" -ForegroundColor Green
     $testsPassed++
 } else {
-    Write-Host "??? Topic creation failed: $createOutput" -ForegroundColor Red
+    Write-Host "[ERROR] Topic creation failed: $createOutput" -ForegroundColor Red
     Write-Host "Continuing with tests assuming topic exists..." -ForegroundColor Yellow
     $testsFailed++
 }
@@ -105,23 +118,24 @@ Test-CliCommand "Produce Simple Message" @("produce", "--topic", $testTopic, "--
 Test-CliCommand "Produce to Partition 0" @("produce", "--topic", $testTopic, "--key", "key2", "--value", "Message for partition 0", "--partition", "0")
 
 # Produce with different acks
-Test-CliCommand "Produce with acks=0 (fire-and-forget)" @("produce", "--topic", $testTopic, "--key", "key3", "--value", "Fire and forget", "--acks", "0")
-Test-CliCommand "Produce with acks=1 (leader only)" @("produce", "--topic", $testTopic, "--key", "key4", "--value", "Leader ack", "--acks", "1")
-Test-CliCommand "Produce with acks=-1 (all replicas)" @("produce", "--topic", $testTopic, "--key", "key5", "--value", "All replicas ack", "--acks", "-1")
+Test-CliCommand "Produce with acks=0 fire-and-forget" @("produce", "--topic", $testTopic, "--key", "key3", "--value", "Fire and forget", "--acks", "0")
+Test-CliCommand "Produce with acks=1 leader only" @("produce", "--topic", $testTopic, "--key", "key4", "--value", "Leader ack", "--acks", "1")
+Test-CliCommand "Produce with acks=-1 all replicas" @("produce", "--topic", $testTopic, "--key", "key5", "--value", "All replicas ack", "--acks", "-1")
 
 # Produce with special characters
-Test-CliCommand "Produce with special chars" @("produce", "--topic", $testTopic, "--key", "special-key", "--value", "Special: !@#$%^&*()_+-=[]{}|;:',.<>?/~``")
+Test-CliCommand "Produce with special chars" @("produce", "--topic", $testTopic, "--key", "special-key", "--value", "Special chars test")
 
 # Produce long message
 $longValue = "A" * 500
-Test-CliCommand "Produce long message (500 chars)" @("produce", "--topic", $testTopic, "--key", "long", "--value", $longValue)
+Test-CliCommand "Produce long message 500 chars" @("produce", "--topic", $testTopic, "--key", "long", "--value", $longValue)
 
 # Produce with JSON-like value
-Test-CliCommand "Produce JSON-like value" @("produce", "--topic", $testTopic, "--key", "json-key", "--value", '{"name":"John","age":30,"city":"NYC"}')
+$jsonValue = '{\"name\":\"John\",\"age\":30,\"city\":\"NYC\"}'
+Test-CliCommand "Produce JSON-like value" @("produce", "--topic", $testTopic, "--key", "json-key", "--value", $jsonValue)
 
 # Negative tests
 Test-CliCommand "Produce without topic" @("produce", "--key", "key", "--value", "value") -ShouldSucceed $false
-Test-CliCommand "Produce without key (key is optional)" @("produce", "--topic", $testTopic, "--value", "value") -ShouldSucceed $true
+Test-CliCommand "Produce without key is optional" @("produce", "--topic", $testTopic, "--value", "value") -ShouldSucceed $true
 Test-CliCommand "Produce without value" @("produce", "--topic", $testTopic, "--key", "key") -ShouldSucceed $false
 
 Write-Host ""
@@ -143,14 +157,14 @@ Test-CliCommand "Produce with numeric values" @("produce", "--topic", $testTopic
 # Whitespace
 Test-CliCommand "Produce with whitespace value" @("produce", "--topic", $testTopic, "--key", "spaces", "--value", "  leading and trailing spaces  ")
 
-# Non-existent topic (should fail if topic doesn't exist)
+# Non-existent topic (should fail if topic does not exist)
 Test-CliCommand "Produce to non-existent topic" @("produce", "--topic", "non-existent-topic-xyz", "--key", "key", "--value", "value") -ShouldSucceed $false
 
 Write-Host ""
 
 # Test 5: Batch Production
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "Test Suite 5: Batch Production (File-Based)" -ForegroundColor Cyan
+Write-Host "Test Suite 5: Batch Production File-Based" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Create a batch file for testing
@@ -164,21 +178,22 @@ batch-key-2:Batch message 2 with key
 batch-key-3:Batch message 3 with key
 Batch message 4 without key
 Batch message 5 without key
-order-100:{"orderId": "100", "amount": 199.99, "status": "pending"}
-order-101:{"orderId": "101", "amount": 299.99, "status": "confirmed"}
+order-100:Order 100 pending
+order-101:Order 101 confirmed
 Standalone message 8
 user-500:USER_LOGIN_EVENT
 admin-001:ADMIN_ACTION_COMPLETED
 "@
 
 Set-Content -Path $batchFile -Value $batchContent
-Write-Host "  Created batch file: $batchFile" -ForegroundColor Gray
+Write-Host '  Created batch file: ' -NoNewline -ForegroundColor Gray
+Write-Host $batchFile -ForegroundColor Gray
 
 # Test batch produce with acks=-1
-Test-CliCommand "Batch Produce (acks=-1)" @("produce", "--topic", $testTopic, "--batch-file", $batchFile, "--acks", "-1")
+Test-CliCommand "Batch Produce acks=-1" @("produce", "--topic", $testTopic, "--batch-file", $batchFile, "--acks", "-1")
 
 # Test batch produce with acks=1
-Test-CliCommand "Batch Produce (acks=1)" @("produce", "--topic", $testTopic, "--batch-file", $batchFile, "--acks", "1")
+Test-CliCommand "Batch Produce acks=1" @("produce", "--topic", $testTopic, "--batch-file", $batchFile, "--acks", "1")
 
 # Test batch produce to specific partition
 Test-CliCommand "Batch Produce to partition 0" @("produce", "--topic", $testTopic, "--batch-file", $batchFile, "--partition", "0")
@@ -195,7 +210,7 @@ Write-Host ""
 
 # Test 6: Performance Test (Optional)
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "Test Suite 6: Performance Test (50 messages)" -ForegroundColor Cyan
+Write-Host "Test Suite 6: Performance Test 50 messages" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $startTime = Get-Date
@@ -227,10 +242,10 @@ Write-Host "    Duration: $([math]::Round($duration, 2))s" -ForegroundColor Cyan
 Write-Host "    Throughput: $throughput messages/sec" -ForegroundColor Cyan
 
 if ($perfFailed -eq 0) {
-    Write-Host "  ??? PASSED" -ForegroundColor Green
+    Write-Host "  [PASS]" -ForegroundColor Green
     $testsPassed++
 } else {
-    Write-Host "  ??? FAILED" -ForegroundColor Red
+    Write-Host "  [FAIL]" -ForegroundColor Red
     $testsFailed++
 }
 

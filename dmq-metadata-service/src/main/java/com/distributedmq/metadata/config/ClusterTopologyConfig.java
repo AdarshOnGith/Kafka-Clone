@@ -159,5 +159,7 @@ public class ClusterTopologyConfig {
     private static class JwtConfig {
         private String secret;
         private String algorithm;
+        @JsonProperty("access-token-expiry-seconds")
+        private Long accessTokenExpirySeconds;
     }
 }

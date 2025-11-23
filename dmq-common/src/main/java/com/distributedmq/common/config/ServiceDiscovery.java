@@ -99,6 +99,13 @@ public class ServiceDiscovery {
         defaultConfig.getServices().getStorageServices().add(ss2);
         defaultConfig.getServices().getStorageServices().add(ss3);
 
+        // Default JWT config
+        JwtConfig jwtConfig = new JwtConfig();
+        jwtConfig.setSecret("dmq-secret-key-256-bits-for-hs256-signature-algorithm-change-in-production-please");
+        jwtConfig.setAlgorithm("HS256");
+        jwtConfig.setAccessTokenExpirySeconds(900);
+        defaultConfig.setJwt(jwtConfig);
+
         return defaultConfig;
     }
 
@@ -229,10 +236,23 @@ public class ServiceDiscovery {
     public static class JwtConfig {
         private String secret;
         private String algorithm = "HS256";
+        // Centralized access-token expiry (seconds)
+        @JsonProperty("access-token-expiry-seconds")
+        private long accessTokenExpirySeconds = 900;
 
         public String getSecret() { return secret; }
         public void setSecret(String secret) { this.secret = secret; }
         public String getAlgorithm() { return algorithm; }
         public void setAlgorithm(String algorithm) { this.algorithm = algorithm; }
+        public long getAccessTokenExpirySeconds() { return accessTokenExpirySeconds; }
+        public void setAccessTokenExpirySeconds(long accessTokenExpirySeconds) { this.accessTokenExpirySeconds = accessTokenExpirySeconds; }
+    }
+
+    /**
+     * Get JWT access token expiry in seconds (centralized value)
+     */
+    public static long getJwtExpirySeconds() {
+        JwtConfig jwtConfig = config.getJwt();
+        return jwtConfig != null ? jwtConfig.getAccessTokenExpirySeconds() : 900L;
     }
 }

@@ -13,9 +13,6 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class SecurityConfig {
     
-    @Value("${dmq.security.jwt.access-token-expiry-seconds}")
-    private long expirySeconds;
-    
     @Value("${dmq.security.jwt.issuer}")
     private String issuer;
     
@@ -26,6 +23,7 @@ public class SecurityConfig {
     public JwtTokenProvider jwtTokenProvider() {
         // Load ServiceDiscovery config to get JWT secret from services.json
         ServiceDiscovery.loadConfig();
+        long expirySeconds = ServiceDiscovery.getJwtExpirySeconds();
         return new JwtTokenProvider(expirySeconds, issuer, audience);
     }
     

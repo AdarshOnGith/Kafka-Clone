@@ -63,6 +63,7 @@
   },
   "jwt": {
     "secret": "dmq-secret-key-256-bits-for-hs256-signature-algorithm-change-in-production-please",
-    "algorithm": "HS256"
+    "algorithm": "HS256",
+    "access-token-expiry-seconds": 900
   }
 }

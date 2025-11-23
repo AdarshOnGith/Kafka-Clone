@@ -190,13 +190,15 @@ public class MetadataServiceClient {
     public List<ConsumerGroupResponse> listConsumerGroups() throws Exception {
         String url = controllerUrl + "/api/v1/metadata/consumer-groups";
         
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .timeout(Duration.ofSeconds(10))
+        HttpRequest request = createRequestBuilder(url)
                 .GET()
                 .build();
         
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        
+        if (response.statusCode() == 401) {
+            throw new RuntimeException("Authentication required. Please login first: mycli login --username <user>");
+        }
         
         if (response.statusCode() != 200) {
             throw new RuntimeException("Failed to list consumer groups: HTTP " + response.statusCode());
@@ -211,13 +213,15 @@ public class MetadataServiceClient {
     public ConsumerGroupResponse describeConsumerGroup(String groupId) throws Exception {
         String url = controllerUrl + "/api/v1/metadata/consumer-groups/" + groupId;
         
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .timeout(Duration.ofSeconds(10))
+        HttpRequest request = createRequestBuilder(url)
                 .GET()
                 .build();
         
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        
+        if (response.statusCode() == 401) {
+            throw new RuntimeException("Authentication required. Please login first: mycli login --username <user>");
+        }
         
         if (response.statusCode() == 404) {
             return null;

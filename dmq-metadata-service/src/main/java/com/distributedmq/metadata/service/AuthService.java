@@ -27,11 +27,11 @@ public class AuthService {
     private final Map<String, UserCredentials> users = new HashMap<>();
     private final SecurityProperties securityProperties;
     
-    public AuthService(@Value("${dmq.security.jwt.access-token-expiry-seconds}") long expirySeconds,
+    public AuthService(JwtTokenProvider tokenProvider,
                       @Value("${dmq.security.jwt.issuer}") String issuer,
                       @Value("${dmq.security.jwt.audience}") String audience,
                       SecurityProperties securityProperties) {
-        this.tokenProvider = new JwtTokenProvider(expirySeconds, issuer, audience);
+        this.tokenProvider = tokenProvider;
         this.securityProperties = securityProperties;
     }
     

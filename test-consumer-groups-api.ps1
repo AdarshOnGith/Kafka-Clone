@@ -8,12 +8,37 @@ Write-Host "  Consumer Groups API Test" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
+# Login first (required for JWT authentication)
+Write-Host "Logging in..." -ForegroundColor Yellow
+$loginOutput = java -jar dmq-client\target\mycli.jar login --username admin --password admin123 2>&1
+if ($LASTEXITCODE -eq 0) {
+    Write-Host " Login successful" -ForegroundColor Green
+} else {
+    Write-Host " Login failed" -ForegroundColor Red
+    exit 1
+}
+Write-Host ""
+
+# Read JWT token from saved file
+$tokenFile = "$env:USERPROFILE\.dmq\token.properties"
+if (-not (Test-Path $tokenFile)) {
+    Write-Host "[ERROR] Token file not found. Please login first." -ForegroundColor Red
+    exit 1
+}
+
+$tokenContent = Get-Content $tokenFile | Where-Object { $_ -match '^token=' }
+$jwtToken = $tokenContent -replace '^token=', ''
+$headers = @{
+    "Authorization" = "Bearer $jwtToken"
+    "Content-Type" = "application/json"
+}
+
 # Wait for service to be ready
 Write-Host "Checking if metadata service is running..." -ForegroundColor Yellow
 Start-Sleep -Seconds 2
 
 try {
-    $controller = Invoke-RestMethod -Uri "http://localhost:9091/api/v1/metadata/controller" -Method GET -TimeoutSec 5
+    $controller = Invoke-RestMethod -Uri "http://localhost:9091/api/v1/metadata/controller" -Method GET -Headers $headers -TimeoutSec 5
     Write-Host "[PASS] Connected to controller" -ForegroundColor Green
     Write-Host ""
 } catch {
@@ -28,7 +53,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Test 1: List Consumer Groups (empty)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 try {
-    $groups = Invoke-RestMethod -Uri "http://localhost:9091/api/v1/metadata/consumer-groups" -Method GET
+    $groups = Invoke-RestMethod -Uri "http://localhost:9091/api/v1/metadata/consumer-groups" -Method GET -Headers $headers
     Write-Host "[PASS] List groups endpoint works" -ForegroundColor Green
     Write-Host "Found $($groups.Count) groups" -ForegroundColor Gray
     Write-Host ""
@@ -47,7 +72,7 @@ $createRequest = @{
 } | ConvertTo-Json
 
 try {
-    $created = Invoke-RestMethod -Uri "http://localhost:9091/api/v1/metadata/consumer-groups/find-or-create" -Method POST -Body $createRequest -ContentType "application/json"
+    $created = Invoke-RestMethod -Uri "http://localhost:9091/api/v1/metadata/consumer-groups/find-or-create" -Method POST -Body $createRequest -Headers $headers
     Write-Host "[PASS] Consumer group created" -ForegroundColor Green
     Write-Host "Group ID: $($created.groupId)" -ForegroundColor Gray
     Write-Host "Topic: $($created.topic)" -ForegroundColor Gray
@@ -66,7 +91,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Test 3: List Consumer Groups (with data)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 try {
-    $groups = Invoke-RestMethod -Uri "http://localhost:9091/api/v1/metadata/consumer-groups" -Method GET
+    $groups = Invoke-RestMethod -Uri "http://localhost:9091/api/v1/metadata/consumer-groups" -Method GET -Headers $headers
     Write-Host "[PASS] List groups endpoint works" -ForegroundColor Green
     Write-Host "Found $($groups.Count) group(s)" -ForegroundColor Gray
     foreach ($group in $groups) {
@@ -83,7 +108,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Test 4: Describe Consumer Group" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 try {
-    $group = Invoke-RestMethod -Uri "http://localhost:9091/api/v1/metadata/consumer-groups/$testGroupId" -Method GET
+    $group = Invoke-RestMethod -Uri "http://localhost:9091/api/v1/metadata/consumer-groups/$testGroupId" -Method GET -Headers $headers
     Write-Host "[PASS] Describe group endpoint works" -ForegroundColor Green
     Write-Host "Group ID: $($group.groupId)" -ForegroundColor Gray
     Write-Host "Topic: $($group.topic)" -ForegroundColor Gray
@@ -113,7 +138,7 @@ Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Test 6: CLI describe-group" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
-$output = java -jar dmq-client\target\mycli.jar describe-group --group $testGroupId 2>&1
+$output = java -jar dmq-client\target\mycli.jar describe-group --topic test-topic --app-id test-app 2>&1
 $exitCode = $LASTEXITCODE
 if ($exitCode -eq 0) {
     Write-Host "[PASS] CLI describe-group works" -ForegroundColor Green
