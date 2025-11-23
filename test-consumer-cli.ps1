@@ -144,10 +144,10 @@ if ($LASTEXITCODE -eq 0) {
 Write-Host "[Test 5] Consume with consumer group (group-based consumption)" -ForegroundColor Yellow
 Write-Host "  Starting consumer group consumption..." -ForegroundColor Gray
 
-# Run consume-group in background job for 10 seconds
-$groupAppId = "test-consumer-group-$timestamp"
-$metadataUrl = "http://localhost:9092"  # Use leader node
-$consumeGroupJob = Start-Job -ScriptBlock {
+  # Run consume-group in background job for 10 seconds
+  $groupAppId = "test-consumer-group-$timestamp"
+  $metadataUrl = "http://localhost:9091"  # Use leader node
+  $consumeGroupJob = Start-Job -ScriptBlock {
     param($jar, $topic, $appId, $metaUrl)
     & java -jar $jar consume-group --topic $topic --app-id $appId --max-messages 20 --metadata-url $metaUrl 2>&1
 } -ArgumentList $cliJarAbsolute, $testTopic, $groupAppId, $metadataUrl

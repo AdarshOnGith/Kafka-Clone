@@ -54,6 +54,7 @@ public class DMQGuiClientWithAuth extends JFrame {
     private JLabel authStatusLabel;
     private JButton loginBtn;
     private JButton logoutBtn;
+    private JButton refreshTokenBtn;
     
     // Producer Tab
     private JTextField producerTopic;
@@ -130,22 +131,11 @@ public class DMQGuiClientWithAuth extends JFrame {
         topPanel.add(logoutBtn);
         
         // Refresh Token button
-        JButton refreshTokenBtn = new JButton("Refresh Token");
+        refreshTokenBtn = new JButton("Refresh Token");
         refreshTokenBtn.setEnabled(false);
+        refreshTokenBtn.setToolTipText("Renew JWT token expiration");
         refreshTokenBtn.addActionListener(e -> refreshToken());
         topPanel.add(refreshTokenBtn);
-        
-        // Enable/disable refresh button based on login state
-        loginBtn.addPropertyChangeListener(evt -> {
-            if ("enabled".equals(evt.getPropertyName())) {
-                refreshTokenBtn.setEnabled(!loginBtn.isEnabled());
-            }
-        });
-        logoutBtn.addPropertyChangeListener(evt -> {
-            if ("enabled".equals(evt.getPropertyName())) {
-                refreshTokenBtn.setEnabled(logoutBtn.isEnabled());
-            }
-        });
         
         // Pretty mode toggle
         prettyModeCheckbox = new JCheckBox("Pretty Mode", true);
@@ -296,6 +286,7 @@ public class DMQGuiClientWithAuth extends JFrame {
                             authStatusLabel.setForeground(new Color(0, 128, 0));
                             loginBtn.setEnabled(false);
                             logoutBtn.setEnabled(true);
+                            refreshTokenBtn.setEnabled(true);
                         }
                     });
                 } else {
@@ -336,6 +327,7 @@ public class DMQGuiClientWithAuth extends JFrame {
                     authStatusLabel.setForeground(new Color(0, 128, 0));
                     loginBtn.setEnabled(false);
                     logoutBtn.setEnabled(true);
+                    refreshTokenBtn.setEnabled(true);
                 }
             }
         } catch (Exception e) {
@@ -354,6 +346,7 @@ public class DMQGuiClientWithAuth extends JFrame {
         authStatusLabel.setForeground(Color.RED);
         loginBtn.setEnabled(true);
         logoutBtn.setEnabled(false);
+        refreshTokenBtn.setEnabled(false);
     }
     
     /**
