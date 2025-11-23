@@ -53,6 +53,8 @@ public class MyCli {
                 return new LoginCommand();
             case "logout":
                 return new LogoutCommand();
+            case "refresh-token":
+                return new RefreshTokenCommand();
             case "create-topic":
                 return new CreateTopicCommand();
             case "list-topics":
@@ -98,6 +100,7 @@ public class MyCli {
         System.out.println("Authentication:");
         System.out.println("  login              Authenticate and obtain JWT token");
         System.out.println("  logout             Clear stored JWT token");
+        System.out.println("  refresh-token      Refresh JWT token (renew expiry)");
         System.out.println();
         System.out.println("Topic Management:");
         System.out.println("  create-topic       Create a new topic");

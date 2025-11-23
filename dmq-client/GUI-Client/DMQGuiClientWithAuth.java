@@ -129,6 +129,24 @@ public class DMQGuiClientWithAuth extends JFrame {
         logoutBtn.addActionListener(e -> logout());
         topPanel.add(logoutBtn);
         
+        // Refresh Token button
+        JButton refreshTokenBtn = new JButton("Refresh Token");
+        refreshTokenBtn.setEnabled(false);
+        refreshTokenBtn.addActionListener(e -> refreshToken());
+        topPanel.add(refreshTokenBtn);
+        
+        // Enable/disable refresh button based on login state
+        loginBtn.addPropertyChangeListener(evt -> {
+            if ("enabled".equals(evt.getPropertyName())) {
+                refreshTokenBtn.setEnabled(!loginBtn.isEnabled());
+            }
+        });
+        logoutBtn.addPropertyChangeListener(evt -> {
+            if ("enabled".equals(evt.getPropertyName())) {
+                refreshTokenBtn.setEnabled(logoutBtn.isEnabled());
+            }
+        });
+        
         // Pretty mode toggle
         prettyModeCheckbox = new JCheckBox("Pretty Mode", true);
         prettyModeCheckbox.setToolTipText("Show only essential output without decorations");
@@ -336,6 +354,64 @@ public class DMQGuiClientWithAuth extends JFrame {
         authStatusLabel.setForeground(Color.RED);
         loginBtn.setEnabled(true);
         logoutBtn.setEnabled(false);
+    }
+    
+    /**
+     * Refresh token - renew JWT token expiry
+     */
+    private void refreshToken() {
+        if (!logoutBtn.isEnabled()) {
+            JOptionPane.showMessageDialog(this, "Not logged in. Please login first.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        
+        displayCommandOutput("Refreshing token...", "");
+        
+        CompletableFuture.runAsync(() -> {
+            try {
+                ProcessBuilder pb = new ProcessBuilder("java", "-jar", CLI_JAR, "refresh-token");
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                
+                BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream())
+                );
+                
+                StringBuilder output = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+                
+                int exitCode = process.waitFor();
+                
+                if (exitCode == 0) {
+                    // Refresh successful, reload token
+                    loadStoredToken();
+                    SwingUtilities.invokeLater(() -> {
+                        displayResult(output.toString(), true, exitCode);
+                        JOptionPane.showMessageDialog(this, "Token refreshed successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
+                    });
+                } else {
+                    SwingUtilities.invokeLater(() -> {
+                        displayResult(output.toString(), false, exitCode);
+                        JOptionPane.showMessageDialog(this, 
+                            "Token refresh failed. You may need to login again.", 
+                            "Error", 
+                            JOptionPane.ERROR_MESSAGE);
+                    });
+                }
+                
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> {
+                    displayError("Refresh error: " + e.getMessage());
+                    JOptionPane.showMessageDialog(this, 
+                        "Refresh error: " + e.getMessage(), 
+                        "Error", 
+                        JOptionPane.ERROR_MESSAGE);
+                });
+            }
+        });
     }
     
     // All other methods from original DMQGuiClient remain the same

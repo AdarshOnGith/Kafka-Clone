@@ -46,6 +46,7 @@ public class TokenManager {
         props.setProperty("token", token);
         props.setProperty("username", username);
         props.setProperty("timestamp", String.valueOf(System.currentTimeMillis()));
+        props.setProperty("saved-at", new java.util.Date().toString());
         
         try (FileWriter writer = new FileWriter(TOKEN_FILE)) {
             props.store(writer, "DMQ Authentication Token");
@@ -121,5 +122,67 @@ public class TokenManager {
             return null;
         }
         return "Bearer " + currentToken;
+    }
+    
+    /**
+     * Check if token is likely expired (based on 15 minute default expiry)
+     * This is an estimate - actual expiry is validated server-side
+     */
+    public boolean isTokenLikelyExpired() {
+        File tokenFile = new File(TOKEN_FILE);
+        if (!tokenFile.exists() || currentToken == null) {
+            return true;
+        }
+        
+        try {
+            Properties props = new Properties();
+            try (FileReader reader = new FileReader(tokenFile)) {
+                props.load(reader);
+            }
+            
+            String timestampStr = props.getProperty("timestamp");
+            if (timestampStr == null) {
+                return false; // Cannot determine, assume valid
+            }
+            
+            long savedTimestamp = Long.parseLong(timestampStr);
+            long currentTime = System.currentTimeMillis();
+            long ageMinutes = (currentTime - savedTimestamp) / 1000 / 60;
+            
+            // Assume 15 minute expiry (default config)
+            return ageMinutes >= 15;
+            
+        } catch (Exception e) {
+            return false; // Cannot determine, assume valid
+        }
+    }
+    
+    /**
+     * Get token age in minutes
+     */
+    public long getTokenAgeMinutes() {
+        File tokenFile = new File(TOKEN_FILE);
+        if (!tokenFile.exists()) {
+            return -1;
+        }
+        
+        try {
+            Properties props = new Properties();
+            try (FileReader reader = new FileReader(tokenFile)) {
+                props.load(reader);
+            }
+            
+            String timestampStr = props.getProperty("timestamp");
+            if (timestampStr == null) {
+                return -1;
+            }
+            
+            long savedTimestamp = Long.parseLong(timestampStr);
+            long currentTime = System.currentTimeMillis();
+            return (currentTime - savedTimestamp) / 1000 / 60;
+            
+        } catch (Exception e) {
+            return -1;
+        }
     }
 }

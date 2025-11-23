@@ -80,6 +80,7 @@ public class JwtValidator {
      */
     private boolean isPublicEndpoint(String path) {
         return path.equals("/api/v1/auth/login") ||
+               path.equals("/api/v1/auth/refresh") ||
                path.equals("/api/v1/storage/health") ||
                path.startsWith("/actuator/");
     }

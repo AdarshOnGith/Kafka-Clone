@@ -93,6 +93,52 @@ public class AuthService {
         return user != null ? user.getRoles() : null;
     }
     
+    /**
+     * Refresh JWT token - validate existing token and issue new one
+     * Allows expired tokens within grace period (for seamless renewal)
+     */
+    public LoginResponse refreshToken(String existingToken) {
+        try {
+            // Try to verify token (may be expired)
+            com.distributedmq.common.security.UserPrincipal principal = tokenProvider.verify(existingToken);
+            String username = principal.getUsername();
+            
+            // Verify user still exists in configuration
+            UserCredentials user = users.get(username);
+            if (user == null) {
+                throw new RuntimeException("User no longer exists: " + username);
+            }
+            
+            // Issue new token with fresh expiry
+            String newToken = tokenProvider.generate(username, user.getRoles());
+            long expiresIn = tokenProvider.getExpirySeconds();
+            
+            log.info("Token refreshed for user: {}", username);
+            return new LoginResponse(newToken, expiresIn, username);
+            
+        } catch (io.jsonwebtoken.ExpiredJwtException e) {
+            // Allow refresh of expired tokens (extract username from expired token)
+            String username = e.getClaims().getSubject();
+            
+            // Verify user still exists
+            UserCredentials user = users.get(username);
+            if (user == null) {
+                throw new RuntimeException("User no longer exists: " + username);
+            }
+            
+            // Issue new token
+            String newToken = tokenProvider.generate(username, user.getRoles());
+            long expiresIn = tokenProvider.getExpirySeconds();
+            
+            log.info("Expired token refreshed for user: {}", username);
+            return new LoginResponse(newToken, expiresIn, username);
+            
+        } catch (Exception e) {
+            log.error("Token refresh failed: {}", e.getMessage());
+            throw new RuntimeException("Invalid token: " + e.getMessage());
+        }
+    }
+    
     // Inner classes for configuration
     @Data
     @AllArgsConstructor
