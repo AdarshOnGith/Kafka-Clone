@@ -12,12 +12,17 @@ import com.distributedmq.storage.config.StorageConfig;
 import com.distributedmq.storage.config.StorageConfig;
 import com.distributedmq.storage.replication.MetadataStore;
 import com.distributedmq.storage.replication.ReplicationManager;
+import com.distributedmq.common.security.JwtException;
+import com.distributedmq.common.security.JwtValidator;
+import com.distributedmq.common.security.UserPrincipal;
 import com.distributedmq.storage.service.StorageService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
+
+import javax.servlet.http.HttpServletRequest;
 
 /**
  * REST Controller for Storage operations
@@ -33,6 +38,7 @@ public class StorageController {
     private final ReplicationManager replicationManager;
     private final StorageConfig config;
     private final MetadataStore metadataStore;
+    private final JwtValidator jwtValidator;
     /**
      * HealthCheck
      * Endpoint: GET /api/v1/storage/health
@@ -48,14 +54,15 @@ public class StorageController {
      */
     @PostMapping("/messages")
     public ResponseEntity<ProduceResponse> produceMessages(
-            @Validated @RequestBody ProduceRequest request) {
+            @Validated @RequestBody ProduceRequest request,
+            HttpServletRequest httpRequest) {
         
         log.info("Received produce request for topic: {}, partition: {}, messageCount: {}", 
                 request.getTopic(), request.getPartition(), 
                 request.getMessages() != null ? request.getMessages().size() : 0);
         
         // Step 1: Broker Reception & Validation
-        ProduceResponse.ErrorCode validationError = validateProduceRequest(request);
+        ProduceResponse.ErrorCode validationError = validateProduceRequest(request, httpRequest);
         if (validationError != ProduceResponse.ErrorCode.NONE) {
             return ResponseEntity.ok(ProduceResponse.builder()
                     .topic(request.getTopic())
@@ -111,10 +118,23 @@ public class StorageController {
      */
     @PostMapping("/consume")
     public ResponseEntity<ConsumeResponse> consume(
-            @Validated @RequestBody ConsumeRequest request) {
+            @Validated @RequestBody ConsumeRequest request,
+            HttpServletRequest httpRequest) {
         
         log.debug("Received consume request for topic: {}, partition: {}, offset: {}", 
                 request.getTopic(), request.getPartition(), request.getOffset());
+        
+        // JWT Authentication & Authorization
+        try {
+            UserPrincipal user = jwtValidator.validateRequest(httpRequest);
+            if (!jwtValidator.hasAnyRole(user, "CONSUMER", "ADMIN")) {
+                log.warn("User {} lacks CONSUMER/ADMIN role", user.getUsername());
+                return ResponseEntity.status(403).build();
+            }
+        } catch (JwtException e) {
+            log.warn("JWT validation failed: {}", e.getMessage());
+            return ResponseEntity.status(401).build();
+        }
         
         // Sanity checks
         if (request.getTopic() == null || request.getTopic().isEmpty()) {
@@ -146,9 +166,21 @@ public class StorageController {
     }
 
     /**
-     * Validate produce request
+     * Validate produce request including JWT authentication
      */
-    private ProduceResponse.ErrorCode validateProduceRequest(ProduceRequest request) {
+    private ProduceResponse.ErrorCode validateProduceRequest(ProduceRequest request, HttpServletRequest httpRequest) {
+        // JWT Authentication & Authorization
+        try {
+            UserPrincipal user = jwtValidator.validateRequest(httpRequest);
+            if (!jwtValidator.hasAnyRole(user, "PRODUCER", "ADMIN")) {
+                log.warn("User {} lacks PRODUCER/ADMIN role", user.getUsername());
+                return ProduceResponse.ErrorCode.UNAUTHORIZED;
+            }
+        } catch (JwtException e) {
+            log.warn("JWT validation failed: {}", e.getMessage());
+            return ProduceResponse.ErrorCode.UNAUTHORIZED;
+        }
+        
         if (request.getTopic() == null || request.getTopic().isEmpty()) {
             return ProduceResponse.ErrorCode.INVALID_REQUEST;
         }

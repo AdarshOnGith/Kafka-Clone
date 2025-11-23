@@ -13,6 +13,7 @@ import java.util.regex.*;
 /**
  * Minimal GUI Client for DMQ System
  * Wraps CLI commands for easy testing and visualization
+ * Now supports JWT authentication
  */
 public class DMQGuiClient extends JFrame {
     
@@ -41,12 +42,19 @@ public class DMQGuiClient extends JFrame {
         }
     }
     
+    // Authentication state
+    private String jwtToken = null;
+    private String currentUsername = null;
+    
     // UI Components
     private JTabbedPane tabbedPane;
     private JTextArea outputArea;
     private JTextField metadataServiceUrl;
     private JCheckBox prettyModeCheckbox;
     private JButton getLeaderBtn;
+    private JLabel authStatusLabel;
+    private JButton loginBtn;
+    private JButton logoutBtn;
     
     // Producer Tab
     private JTextField producerTopic;
@@ -84,12 +92,13 @@ public class DMQGuiClient extends JFrame {
     private JButton describeGroupBtn;
     
     public DMQGuiClient() {
-        setTitle("DMQ GUI Client - Enhanced");
+        setTitle("DMQ GUI Client - Enhanced with JWT Auth");
         setSize(1200, 850);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
         
         initComponents();
+        loadStoredToken();
         
         setVisible(true);
     }
@@ -102,8 +111,24 @@ public class DMQGuiClient extends JFrame {
         JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         topPanel.setBorder(new EmptyBorder(10, 10, 5, 10));
         topPanel.add(new JLabel("Metadata Service URL:"));
-        metadataServiceUrl = new JTextField("http://localhost:9092", 30);
+        metadataServiceUrl = new JTextField("http://localhost:9092", 20);
         topPanel.add(metadataServiceUrl);
+        
+        // Auth status label
+        authStatusLabel = new JLabel("Not Logged In");
+        authStatusLabel.setForeground(Color.RED);
+        topPanel.add(authStatusLabel);
+        
+        // Login button
+        loginBtn = new JButton("Login");
+        loginBtn.addActionListener(e -> showLoginDialog());
+        topPanel.add(loginBtn);
+        
+        // Logout button
+        logoutBtn = new JButton("Logout");
+        logoutBtn.setEnabled(false);
+        logoutBtn.addActionListener(e -> logout());
+        topPanel.add(logoutBtn);
         
         // Pretty mode toggle
         prettyModeCheckbox = new JCheckBox("Pretty Mode", true);
@@ -336,6 +361,14 @@ public class DMQGuiClient extends JFrame {
         describeTopicBtn.addActionListener(e -> describeTopic());
         buttonPanel.add(describeTopicBtn);
         
+        JButton deleteTopicBtn = new JButton("Delete Topic");
+        deleteTopicBtn.addActionListener(e -> deleteTopic());
+        buttonPanel.add(deleteTopicBtn);
+        
+        JButton listBrokersBtn = new JButton("List Brokers");
+        listBrokersBtn.addActionListener(e -> listBrokers());
+        buttonPanel.add(listBrokersBtn);
+        
         panel.add(buttonPanel, BorderLayout.SOUTH);
         
         return panel;
@@ -557,6 +590,67 @@ public class DMQGuiClient extends JFrame {
         
         // Use CLI command
         executeCliCommand("describe-topic --name " + name);
+    }
+    
+    private void deleteTopic() {
+        String name = topicName.getText().trim();
+        
+        if (name.isEmpty()) {
+            showError("Topic name is required!");
+            return;
+        }
+        
+        // Confirm deletion
+        int result = JOptionPane.showConfirmDialog(
+            this,
+            "Are you sure you want to delete topic '" + name + "'?\nThis action cannot be undone.",
+            "Confirm Delete Topic",
+            JOptionPane.YES_NO_OPTION,
+            JOptionPane.WARNING_MESSAGE
+        );
+        
+        if (result != JOptionPane.YES_OPTION) {
+            displayResult("Delete operation cancelled", false, 0);
+            return;
+        }
+        
+        // Use CLI command - but we need to bypass the confirmation prompt
+        // We'll handle this by providing "yes" as input
+        displayCommandOutput("Deleting topic...", "delete-topic --name " + name);
+        
+        CompletableFuture.runAsync(() -> {
+            try {
+                ProcessBuilder pb = new ProcessBuilder("java", "-jar", CLI_JAR, "delete-topic", "--name", name);
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                
+                // Send "yes" to confirm deletion
+                try (java.io.PrintWriter writer = new java.io.PrintWriter(process.getOutputStream())) {
+                    writer.println("yes");
+                    writer.flush();
+                }
+                
+                BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                StringBuilder output = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+                
+                int exitCode = process.waitFor();
+                String deleteResult = output.toString();
+                
+                SwingUtilities.invokeLater(() -> displayResult(deleteResult, exitCode == 0, exitCode));
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> displayError("Error deleting topic: " + e.getMessage()));
+            }
+        });
+    }
+    
+    private void listBrokers() {
+        String metadataUrl = metadataServiceUrl.getText().trim();
+        // Use CLI command with metadata URL
+        executeCliCommand("list-brokers --metadata-url " + metadataUrl);
     }
     
     private void listConsumerGroups() {
@@ -868,6 +962,172 @@ public class DMQGuiClient extends JFrame {
     
     private String escapeQuotes(String str) {
         return str.replace("\"", "\\\"");
+    }
+    
+    /**
+     * Show login dialog
+     */
+    private void showLoginDialog() {
+        JDialog loginDialog = new JDialog(this, "Login to DMQ", true);
+        loginDialog.setLayout(new BorderLayout(10, 10));
+        loginDialog.setSize(400, 250);
+        loginDialog.setLocationRelativeTo(this);
+        
+        // Form panel
+        JPanel formPanel = new JPanel(new GridBagLayout());
+        formPanel.setBorder(new EmptyBorder(20, 20, 10, 20));
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        
+        // Username
+        gbc.gridx = 0; gbc.gridy = 0;
+        formPanel.add(new JLabel("Username:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        JTextField usernameField = new JTextField(15);
+        formPanel.add(usernameField, gbc);
+        
+        // Password
+        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0;
+        formPanel.add(new JLabel("Password:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1.0;
+        JPasswordField passwordField = new JPasswordField(15);
+        formPanel.add(passwordField, gbc);
+        
+        // Info label
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 2;
+        JLabel infoLabel = new JLabel("<html><small>Available users: admin, producer1, consumer1, app1</small></html>");
+        infoLabel.setForeground(Color.GRAY);
+        formPanel.add(infoLabel, gbc);
+        
+        loginDialog.add(formPanel, BorderLayout.CENTER);
+        
+        // Button panel
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        JButton okButton = new JButton("Login");
+        JButton cancelButton = new JButton("Cancel");
+        
+        okButton.addActionListener(e -> {
+            String username = usernameField.getText().trim();
+            String password = new String(passwordField.getPassword());
+            
+            if (username.isEmpty() || password.isEmpty()) {
+                JOptionPane.showMessageDialog(loginDialog, "Username and password required", "Error", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+            
+            loginDialog.dispose();
+            performLogin(username, password);
+        });
+        
+        cancelButton.addActionListener(e -> loginDialog.dispose());
+        
+        buttonPanel.add(okButton);
+        buttonPanel.add(cancelButton);
+        loginDialog.add(buttonPanel, BorderLayout.SOUTH);
+        
+        passwordField.addActionListener(e -> okButton.doClick());
+        
+        loginDialog.setVisible(true);
+    }
+    
+    /**
+     * Perform login using CLI command
+     */
+    private void performLogin(String username, String password) {
+        String command = "login --username " + username + " --password " + password;
+        
+        displayCommandOutput("Authenticating...", "");
+        
+        CompletableFuture.runAsync(() -> {
+            try {
+                ProcessBuilder pb = new ProcessBuilder("java", "-jar", CLI_JAR);
+                String[] args = parseCommandLine(command);
+                for (String arg : args) {
+                    pb.command().add(arg);
+                }
+                
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                
+                BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream())
+                );
+                
+                StringBuilder output = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+                
+                int exitCode = process.waitFor();
+                
+                if (exitCode == 0) {
+                    loadStoredToken();
+                    SwingUtilities.invokeLater(() -> {
+                        displayResult(output.toString(), true, exitCode);
+                        if (jwtToken != null) {
+                            authStatusLabel.setText("Logged in as: " + currentUsername);
+                            authStatusLabel.setForeground(new Color(0, 128, 0));
+                            loginBtn.setEnabled(false);
+                            logoutBtn.setEnabled(true);
+                        }
+                    });
+                } else {
+                    SwingUtilities.invokeLater(() -> {
+                        displayResult(output.toString(), false, exitCode);
+                        JOptionPane.showMessageDialog(this, "Login failed. Check output.", "Error", JOptionPane.ERROR_MESSAGE);
+                    });
+                }
+                
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> {
+                    displayError("Login error: " + e.getMessage());
+                });
+            }
+        });
+    }
+    
+    /**
+     * Load stored JWT token from ~/.dmq/token.properties
+     */
+    private void loadStoredToken() {
+        try {
+            String tokenFile = System.getProperty("user.home") + File.separator + ".dmq" + File.separator + "token.properties";
+            File file = new File(tokenFile);
+            
+            if (file.exists()) {
+                Properties props = new Properties();
+                try (FileReader reader = new FileReader(file)) {
+                    props.load(reader);
+                }
+                
+                jwtToken = props.getProperty("token");
+                currentUsername = props.getProperty("username");
+                
+                if (jwtToken != null && !jwtToken.isEmpty()) {
+                    authStatusLabel.setText("Logged in as: " + currentUsername);
+                    authStatusLabel.setForeground(new Color(0, 128, 0));
+                    loginBtn.setEnabled(false);
+                    logoutBtn.setEnabled(true);
+                }
+            }
+        } catch (Exception e) {
+            // Ignore errors loading token
+        }
+    }
+    
+    /**
+     * Logout - clear token
+     */
+    private void logout() {
+        executeCliCommand("logout");
+        jwtToken = null;
+        currentUsername = null;
+        authStatusLabel.setText("Not Logged In");
+        authStatusLabel.setForeground(Color.RED);
+        loginBtn.setEnabled(true);
+        logoutBtn.setEnabled(false);
     }
     
     public static void main(String[] args) {

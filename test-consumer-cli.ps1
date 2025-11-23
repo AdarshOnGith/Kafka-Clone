@@ -20,6 +20,19 @@ if (-not (Test-Path $cliJar)) {
 Write-Host "Using CLI JAR: $cliJar" -ForegroundColor Gray
 Write-Host ""
 
+# Login first (required for JWT authentication)
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "Logging in..." -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+$loginOutput = & java -jar $cliJar login --username admin --password admin123 2>&1
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] Login successful" -ForegroundColor Green
+} else {
+    Write-Host "[ERROR] Login failed: $loginOutput" -ForegroundColor Red
+    exit 1
+}
+Write-Host ""
+
 # ========================================
 # Setup: Create test topic and produce messages
 # ========================================
@@ -59,7 +72,7 @@ for ($p = 0; $p -lt 3; $p++) {
     & java -jar $cliJar produce --topic $testTopic --batch-file $batchFile --partition $p --acks 1 2>&1 | Out-Null
     
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "  Batch for partition $p produced (10 messages)" -ForegroundColor Gray
+        Write-Host "  Batch for partition $p produced - 10 messages" -ForegroundColor Gray
     } else {
         Write-Host "  [WARN] Batch for partition $p failed" -ForegroundColor Yellow
     }
@@ -131,10 +144,10 @@ if ($LASTEXITCODE -eq 0) {
 Write-Host "[Test 5] Consume with consumer group (group-based consumption)" -ForegroundColor Yellow
 Write-Host "  Starting consumer group consumption..." -ForegroundColor Gray
 
-# Run consume-group in background job for 10 seconds
-$groupAppId = "test-consumer-group-$timestamp"
-$metadataUrl = "http://localhost:9092"  # Use leader node
-$consumeGroupJob = Start-Job -ScriptBlock {
+  # Run consume-group in background job for 10 seconds
+  $groupAppId = "test-consumer-group-$timestamp"
+  $metadataUrl = "http://localhost:9091"  # Use leader node
+  $consumeGroupJob = Start-Job -ScriptBlock {
     param($jar, $topic, $appId, $metaUrl)
     & java -jar $jar consume-group --topic $topic --app-id $appId --max-messages 20 --metadata-url $metaUrl 2>&1
 } -ArgumentList $cliJarAbsolute, $testTopic, $groupAppId, $metadataUrl

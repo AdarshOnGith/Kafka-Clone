@@ -80,6 +80,33 @@ dmq:
     storage-node:
       url: ${STORAGE_NODE_URL:http://localhost:8081}  # Default for node 1, can be overridden
       broker-id: ${BROKER_ID:1}
+  
+  # JWT Security Configuration
+  security:
+    jwt:
+      access-token-expiry-seconds: 900  # 15 minutes
+      issuer: "dmq-cluster"
+      audience: "dmq-clients"
+    
+    # Hardcoded users (no database required)
+    users:
+      - username: admin
+        password: admin123
+        roles:
+          - ADMIN
+      - username: producer1
+        password: prod123
+        roles:
+          - PRODUCER
+      - username: consumer1
+        password: cons123
+        roles:
+          - CONSUMER
+      - username: app1
+        password: app123
+        roles:
+          - PRODUCER
+          - CONSUMER
 
 logging:
   level:

@@ -1,6 +1,7 @@
 package com.distributedmq.client.producer;
 
 import com.distributedmq.client.cli.utils.MetadataServiceClient;
+import com.distributedmq.client.cli.utils.TokenManager;
 import com.distributedmq.common.dto.ProduceRequest;
 import com.distributedmq.common.dto.ProduceResponse;
 import com.distributedmq.common.model.TopicMetadata;
@@ -26,6 +27,7 @@ public class SimpleProducer {
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final MetadataServiceClient metadataClient;
+    private final TokenManager tokenManager;
     private final Map<String, TopicMetadata> metadataCache;
     private final AtomicInteger roundRobinCounter;
     
@@ -35,6 +37,7 @@ public class SimpleProducer {
                 .build();
         this.objectMapper = new ObjectMapper();
         this.metadataClient = new MetadataServiceClient(metadataUrl);
+        this.tokenManager = TokenManager.getInstance();
         this.metadataCache = new HashMap<>();
         this.roundRobinCounter = new AtomicInteger(0);
     }
@@ -147,14 +150,26 @@ public class SimpleProducer {
         System.out.println("DEBUG - Sending to: " + url);
         System.out.println("DEBUG - Request body: " + requestBody);
         
-        HttpRequest httpRequest = HttpRequest.newBuilder()
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(30))
-                .header("Content-Type", "application/json")
+                .header("Content-Type", "application/json");
+        
+        // Add JWT token if available
+        String authHeader = tokenManager.getAuthorizationHeader();
+        if (authHeader != null) {
+            requestBuilder.header("Authorization", authHeader);
+        }
+        
+        HttpRequest httpRequest = requestBuilder
                 .POST(HttpRequest.BodyPublishers.ofString(requestBody))
                 .build();
         
         HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+        
+        if (response.statusCode() == 401) {
+            throw new RuntimeException("Authentication required. Please login first: mycli login --username <user>");
+        }
         
         if (response.statusCode() != 200) {
             ProduceResponse errorResponse = new ProduceResponse();

@@ -2,12 +2,17 @@ package com.distributedmq.metadata.controller;
 
 import com.distributedmq.common.dto.ConsumerGroupResponse;
 import com.distributedmq.common.dto.FindGroupRequest;
+import com.distributedmq.common.security.JwtException;
+import com.distributedmq.common.security.JwtValidator;
+import com.distributedmq.common.security.UserPrincipal;
 import com.distributedmq.metadata.service.ConsumerGroupService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import javax.servlet.http.HttpServletRequest;
 
 /**
  * REST Controller for Consumer Group operations
@@ -20,6 +25,7 @@ import org.springframework.web.bind.annotation.*;
 public class ConsumerGroupController {
 
     private final ConsumerGroupService consumerGroupService;
+    private final JwtValidator jwtValidator;
 
     /**
      * Find existing consumer group or create new one
@@ -30,7 +36,22 @@ public class ConsumerGroupController {
      * Response: { "groupId": "G_orders_order-processor", "groupLeaderUrl": "localhost:8081", ... }
      */
     @PostMapping("/find-or-create")
-    public ResponseEntity<ConsumerGroupResponse> findOrCreateGroup(@RequestBody FindGroupRequest request) {
+    public ResponseEntity<ConsumerGroupResponse> findOrCreateGroup(
+            @RequestBody FindGroupRequest request,
+            HttpServletRequest httpRequest) {
+        
+        // JWT Authentication & Authorization
+        try {
+            UserPrincipal user = jwtValidator.validateRequest(httpRequest);
+            if (!jwtValidator.hasAnyRole(user, "CONSUMER", "ADMIN")) {
+                log.warn("User {} lacks CONSUMER/ADMIN role for consumer group discovery", user.getUsername());
+                return ResponseEntity.status(403).build();
+            }
+        } catch (JwtException e) {
+            log.warn("JWT validation failed: {}", e.getMessage());
+            return ResponseEntity.status(401).build();
+        }
+        
         log.info("Find or create consumer group request: topic={}, appId={}", request.getTopic(), request.getAppId());
 
         try {
@@ -132,7 +153,18 @@ public class ConsumerGroupController {
      * GET /api/v1/metadata/consumer-groups/{groupId}
      */
     @GetMapping("/{groupId}")
-    public ResponseEntity<ConsumerGroupResponse> getGroup(@PathVariable String groupId) {
+    public ResponseEntity<ConsumerGroupResponse> getGroup(
+            @PathVariable String groupId,
+            HttpServletRequest httpRequest) {
+        
+        // JWT Authentication (any authenticated user can read)
+        try {
+            jwtValidator.validateRequest(httpRequest);
+        } catch (JwtException e) {
+            log.warn("JWT validation failed: {}", e.getMessage());
+            return ResponseEntity.status(401).build();
+        }
+        
         log.debug("Get consumer group request: groupId={}", groupId);
 
         try {
@@ -156,7 +188,16 @@ public class ConsumerGroupController {
      * GET /api/v1/metadata/consumer-groups
      */
     @GetMapping
-    public ResponseEntity<java.util.List<ConsumerGroupResponse>> listGroups() {
+    public ResponseEntity<java.util.List<ConsumerGroupResponse>> listGroups(HttpServletRequest httpRequest) {
+        
+        // JWT Authentication (any authenticated user can read)
+        try {
+            jwtValidator.validateRequest(httpRequest);
+        } catch (JwtException e) {
+            log.warn("JWT validation failed: {}", e.getMessage());
+            return ResponseEntity.status(401).build();
+        }
+        
         log.debug("List all consumer groups request");
 
         try {

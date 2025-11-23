@@ -49,12 +49,22 @@ public class MyCli {
     
     private static Command getCommand(String name) {
         switch (name.toLowerCase()) {
+            case "login":
+                return new LoginCommand();
+            case "logout":
+                return new LogoutCommand();
+            case "refresh-token":
+                return new RefreshTokenCommand();
             case "create-topic":
                 return new CreateTopicCommand();
             case "list-topics":
                 return new ListTopicsCommand();
             case "describe-topic":
                 return new DescribeTopicCommand();
+            case "delete-topic":
+                return new DeleteTopicCommand();
+            case "list-brokers":
+                return new ListBrokersCommand();
             case "get-leader":
                 return new GetLeaderCommand();
             case "produce":
@@ -91,13 +101,20 @@ public class MyCli {
         System.out.println();
         System.out.println("Usage: mycli <command> [options]");
         System.out.println();
+        System.out.println("Authentication:");
+        System.out.println("  login              Authenticate and obtain JWT token");
+        System.out.println("  logout             Clear stored JWT token");
+        System.out.println("  refresh-token      Refresh JWT token (renew expiry)");
+        System.out.println();
         System.out.println("Topic Management:");
         System.out.println("  create-topic       Create a new topic");
         System.out.println("  list-topics        List all topics");
         System.out.println("  describe-topic     Describe a specific topic");
+        System.out.println("  delete-topic       Delete a topic (ADMIN only)");
         System.out.println();
         System.out.println("Cluster Management:");
         System.out.println("  get-leader         Get Raft leader information");
+        System.out.println("  list-brokers       List all registered brokers");
         System.out.println();
         System.out.println("Producer Commands:");
         System.out.println("  produce            Produce messages to a topic");
@@ -115,8 +132,17 @@ public class MyCli {
         System.out.println("Run 'mycli <command> --help' for more information on a command.");
         System.out.println();
         System.out.println("Examples:");
+        System.out.println("  # Login first (required for most operations)");
+        System.out.println("  mycli login --username admin --password admin123");
+        System.out.println();
         System.out.println("  # Create a topic");
         System.out.println("  mycli create-topic --name orders --partitions 3 --replication-factor 2");
+        System.out.println();
+        System.out.println("  # List brokers");
+        System.out.println("  mycli list-brokers");
+        System.out.println();
+        System.out.println("  # Delete a topic");
+        System.out.println("  mycli delete-topic --name orders");
         System.out.println();
         System.out.println("  # Produce a message");
         System.out.println("  mycli produce --topic orders --key order-123 --value \"Order data\"");

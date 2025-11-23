@@ -111,6 +111,7 @@ public class ClusterTopologyConfig {
         private TopologyData services;
         private ControllerConfig controller;
         private MetadataConfig metadata;
+        private JwtConfig jwt;  // JWT configuration section
     }
 
     @Data
@@ -152,5 +153,13 @@ public class ClusterTopologyConfig {
     @Data
     private static class SyncConfig {
         private Long syncTimeoutMs;
+    }
+    
+    @Data
+    private static class JwtConfig {
+        private String secret;
+        private String algorithm;
+        @JsonProperty("access-token-expiry-seconds")
+        private Long accessTokenExpirySeconds;
     }
 }

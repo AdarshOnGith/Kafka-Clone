@@ -99,6 +99,13 @@ public class ServiceDiscovery {
         defaultConfig.getServices().getStorageServices().add(ss2);
         defaultConfig.getServices().getStorageServices().add(ss3);
 
+        // Default JWT config
+        JwtConfig jwtConfig = new JwtConfig();
+        jwtConfig.setSecret("dmq-secret-key-256-bits-for-hs256-signature-algorithm-change-in-production-please");
+        jwtConfig.setAlgorithm("HS256");
+        jwtConfig.setAccessTokenExpirySeconds(900);
+        defaultConfig.setJwt(jwtConfig);
+
         return defaultConfig;
     }
 
@@ -140,11 +147,28 @@ public class ServiceDiscovery {
                 .orElse(null);
     }
 
+    /**
+     * Get JWT secret from configuration
+     */
+    public static String getJwtSecret() {
+        JwtConfig jwtConfig = config.getJwt();
+        return jwtConfig != null ? jwtConfig.getSecret() : null;
+    }
+
+    /**
+     * Get JWT algorithm from configuration
+     */
+    public static String getJwtAlgorithm() {
+        JwtConfig jwtConfig = config.getJwt();
+        return jwtConfig != null ? jwtConfig.getAlgorithm() : "HS256";
+    }
+
     // Config classes
     public static class ServiceConfig {
         private Services services = new Services();
         private ControllerConfig controller = new ControllerConfig();
         private MetadataConfig metadata = new MetadataConfig();
+        private JwtConfig jwt = new JwtConfig();
 
         public Services getServices() { return services; }
         public void setServices(Services services) { this.services = services; }
@@ -152,6 +176,8 @@ public class ServiceDiscovery {
         public void setController(ControllerConfig controller) { this.controller = controller; }
         public MetadataConfig getMetadata() { return metadata; }
         public void setMetadata(MetadataConfig metadata) { this.metadata = metadata; }
+        public JwtConfig getJwt() { return jwt; }
+        public void setJwt(JwtConfig jwt) { this.jwt = jwt; }
     }
 
     public static class Services {
@@ -205,5 +231,28 @@ public class ServiceDiscovery {
 
         public Integer getSyncTimeoutMs() { return syncTimeoutMs; }
         public void setSyncTimeoutMs(Integer syncTimeoutMs) { this.syncTimeoutMs = syncTimeoutMs; }
+    }
+
+    public static class JwtConfig {
+        private String secret;
+        private String algorithm = "HS256";
+        // Centralized access-token expiry (seconds)
+        @JsonProperty("access-token-expiry-seconds")
+        private long accessTokenExpirySeconds = 900;
+
+        public String getSecret() { return secret; }
+        public void setSecret(String secret) { this.secret = secret; }
+        public String getAlgorithm() { return algorithm; }
+        public void setAlgorithm(String algorithm) { this.algorithm = algorithm; }
+        public long getAccessTokenExpirySeconds() { return accessTokenExpirySeconds; }
+        public void setAccessTokenExpirySeconds(long accessTokenExpirySeconds) { this.accessTokenExpirySeconds = accessTokenExpirySeconds; }
+    }
+
+    /**
+     * Get JWT access token expiry in seconds (centralized value)
+     */
+    public static long getJwtExpirySeconds() {
+        JwtConfig jwtConfig = config.getJwt();
+        return jwtConfig != null ? jwtConfig.getAccessTokenExpirySeconds() : 900L;
     }
 }
