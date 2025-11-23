@@ -60,5 +60,9 @@
     "sync": {
       "syncTimeoutMs": 30000
     }
+  },
+  "jwt": {
+    "secret": "dmq-secret-key-256-bits-for-hs256-signature-algorithm-change-in-production-please",
+    "algorithm": "HS256"
   }
 }

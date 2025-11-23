@@ -49,6 +49,10 @@ public class MyCli {
     
     private static Command getCommand(String name) {
         switch (name.toLowerCase()) {
+            case "login":
+                return new LoginCommand();
+            case "logout":
+                return new LogoutCommand();
             case "create-topic":
                 return new CreateTopicCommand();
             case "list-topics":
@@ -91,6 +95,10 @@ public class MyCli {
         System.out.println();
         System.out.println("Usage: mycli <command> [options]");
         System.out.println();
+        System.out.println("Authentication:");
+        System.out.println("  login              Authenticate and obtain JWT token");
+        System.out.println("  logout             Clear stored JWT token");
+        System.out.println();
         System.out.println("Topic Management:");
         System.out.println("  create-topic       Create a new topic");
         System.out.println("  list-topics        List all topics");
@@ -115,6 +123,9 @@ public class MyCli {
         System.out.println("Run 'mycli <command> --help' for more information on a command.");
         System.out.println();
         System.out.println("Examples:");
+        System.out.println("  # Login first (required for most operations)");
+        System.out.println("  mycli login --username admin --password admin123");
+        System.out.println();
         System.out.println("  # Create a topic");
         System.out.println("  mycli create-topic --name orders --partitions 3 --replication-factor 2");
         System.out.println();

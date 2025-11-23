@@ -1,0 +1,125 @@
+package com.distributedmq.client.cli.utils;
+
+import java.io.*;
+import java.nio.file.*;
+import java.util.Properties;
+
+/**
+ * Manages JWT tokens for CLI and client applications
+ * Stores token in user home directory: ~/.dmq/token
+ */
+public class TokenManager {
+    
+    private static final String DMQ_DIR = System.getProperty("user.home") + File.separator + ".dmq";
+    private static final String TOKEN_FILE = DMQ_DIR + File.separator + "token.properties";
+    
+    private static TokenManager instance;
+    private String currentToken;
+    private String currentUser;
+    
+    private TokenManager() {
+        loadToken();
+    }
+    
+    public static synchronized TokenManager getInstance() {
+        if (instance == null) {
+            instance = new TokenManager();
+        }
+        return instance;
+    }
+    
+    /**
+     * Save token to file
+     */
+    public void saveToken(String token, String username) throws IOException {
+        this.currentToken = token;
+        this.currentUser = username;
+        
+        // Create directory if doesn't exist
+        File dir = new File(DMQ_DIR);
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        
+        // Save to properties file
+        Properties props = new Properties();
+        props.setProperty("token", token);
+        props.setProperty("username", username);
+        props.setProperty("timestamp", String.valueOf(System.currentTimeMillis()));
+        
+        try (FileWriter writer = new FileWriter(TOKEN_FILE)) {
+            props.store(writer, "DMQ Authentication Token");
+        }
+        
+        System.out.println("✓ Token saved for user: " + username);
+    }
+    
+    /**
+     * Load token from file
+     */
+    private void loadToken() {
+        File tokenFile = new File(TOKEN_FILE);
+        if (!tokenFile.exists()) {
+            return;
+        }
+        
+        try {
+            Properties props = new Properties();
+            try (FileReader reader = new FileReader(tokenFile)) {
+                props.load(reader);
+            }
+            
+            this.currentToken = props.getProperty("token");
+            this.currentUser = props.getProperty("username");
+            
+        } catch (IOException e) {
+            // Ignore load errors
+        }
+    }
+    
+    /**
+     * Get current token
+     */
+    public String getToken() {
+        return currentToken;
+    }
+    
+    /**
+     * Get current username
+     */
+    public String getUsername() {
+        return currentUser;
+    }
+    
+    /**
+     * Check if token exists
+     */
+    public boolean hasToken() {
+        return currentToken != null && !currentToken.isEmpty();
+    }
+    
+    /**
+     * Clear token
+     */
+    public void clearToken() throws IOException {
+        this.currentToken = null;
+        this.currentUser = null;
+        
+        File tokenFile = new File(TOKEN_FILE);
+        if (tokenFile.exists()) {
+            tokenFile.delete();
+        }
+        
+        System.out.println("✓ Token cleared");
+    }
+    
+    /**
+     * Get Authorization header value
+     */
+    public String getAuthorizationHeader() {
+        if (currentToken == null) {
+            return null;
+        }
+        return "Bearer " + currentToken;
+    }
+}
